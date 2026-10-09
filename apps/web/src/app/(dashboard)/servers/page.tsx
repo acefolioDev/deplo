@@ -45,9 +45,8 @@ export default function ServersPage() {
     () => window.location.origin,
     () => "",
   );
-  const [withCaddy, setWithCaddy] = useState(true);
-  const [rootTerminal, setRootTerminal] = useState(false);
-  const installCommand = `curl -fsSLo /tmp/deplo-install.sh ${origin}/agent/install.sh && sudo bash /tmp/deplo-install.sh ${origin}${withCaddy ? "" : " --without-caddy"}${rootTerminal ? " --enable-root-terminal" : ""}`;
+  const [rootTerminal, setRootTerminal] = useState(true);
+  const installCommand = `curl -fsSLo /tmp/deplo-install.sh ${origin}/agent/install.sh && sudo bash /tmp/deplo-install.sh ${origin}${rootTerminal ? "" : " --without-root-terminal"}`;
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
@@ -137,8 +136,8 @@ export default function ServersPage() {
             Pairing token
           </div>
           <p className="mt-2 text-sm text-slate-400">
-            Shown once. Expires in 10 minutes. Save it in the agent environment
-            file on the server, then start the service.
+            Shown once. Expires in 10 minutes. Paste it into the installer when
+            prompted.
           </p>
           <code className="mt-4 block break-all rounded-lg bg-black/40 p-3 font-mono text-xs text-emerald-200">
             {token}
@@ -158,20 +157,11 @@ export default function ServersPage() {
               <h2 className="font-semibold">Connect a VPS</h2>
               <p className="mt-2 text-sm leading-6 text-slate-400">
                 Run one command on an Ubuntu 24.04 or Linux Mint 22.2 Cinnamon
-                server. The installer sets up Docker and the agent service. It
-                adds Caddy when you want public HTTPS domains. When it asks for
-                a token, click <strong>Pair token</strong> on your server below
-                and paste it into the terminal.
+                server. It installs only the Deplo agent. Docker and Caddy can
+                be installed later from the root terminal when you need them.
+                When prompted, click <strong>Pair token</strong> below and paste
+                the token into the server terminal.
               </p>
-              <label className="mt-4 flex items-center gap-2 text-sm text-slate-300">
-                <input
-                  type="checkbox"
-                  checked={withCaddy}
-                  onChange={(e) => setWithCaddy(e.target.checked)}
-                  className="accent-emerald-400"
-                />
-                Enable public HTTPS domains with Caddy
-              </label>
               <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
                 <input
                   type="checkbox"
@@ -179,7 +169,7 @@ export default function ServersPage() {
                   onChange={(e) => setRootTerminal(e.target.checked)}
                   className="accent-emerald-400"
                 />
-                Enable root terminal in Deplo
+                Enable root terminal for on-demand server setup
               </label>
               {rootTerminal && (
                 <p className="mt-2 text-xs text-amber-200">
@@ -211,7 +201,7 @@ export default function ServersPage() {
               ) : (
                 <p className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
                   Publish this control plane at a trusted HTTPS URL to connect a
-                  remote VPS. This local demo is for dashboard testing.
+                  remote VPS.
                 </p>
               )}
             </Card>

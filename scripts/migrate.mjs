@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import pg from "pg";
 
-if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
+const migrationURL = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
+if (!migrationURL) throw new Error("DIRECT_URL or DATABASE_URL is required");
+const migrationEnv = { ...process.env, DATABASE_URL: migrationURL };
 
 function prisma(...args) {
   const result = spawnSync(
@@ -15,14 +17,14 @@ function prisma(...args) {
     ],
     {
       stdio: "inherit",
-      env: process.env,
+      env: migrationEnv,
     },
   );
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`Prisma ${args.join(" ")} failed`);
 }
 
-const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
+const db = new pg.Client({ connectionString: migrationURL });
 await db.connect();
 let legacy;
 let prismaHistory;

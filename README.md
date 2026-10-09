@@ -7,14 +7,13 @@
 - [Deploy the Deplo control plane to production](docs/PRODUCTION.md) — for the person hosting Deplo.
 - [Use Deplo](docs/USER_GUIDE.md) — for developers creating accounts, connecting servers, and deploying applications.
 
-For a local preview on a Mac with PostgreSQL running, use `npm run demo` and open [http://localhost:3456](http://localhost:3456). The command creates a separate demo database and prints its account credentials. A remote VPS needs an HTTPS control-plane URL and cannot pair with this local HTTP preview.
+The control plane is configured for Vercel and Neon. The production guide lists the exact project settings, environment variables, and migration command. A remote VPS needs the deployed HTTPS URL to pair its agent.
 
 ## Repository
 
 - `apps/web` — Next.js dashboard, API, and Prisma schema/migrations
 - `agent` — Go agent for Docker deployments and optional root terminal access
-- `scripts` — setup, migration, and demo commands
-- `examples/nestjs` — sample image build and publication
+- `scripts` — migration and agent asset build commands
 
 ## Development checks
 

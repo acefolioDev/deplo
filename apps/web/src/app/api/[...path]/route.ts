@@ -96,6 +96,25 @@ async function ownedEnvironment(id: string, userId: string) {
     project_name: environment.projects.name,
   };
 }
+async function requireDeploymentRuntime(serverId: string, environmentId: string) {
+  const server = await prisma.servers.findUnique({
+    where: { id: serverId },
+    select: { docker_available: true, caddy_available: true },
+  });
+  if (!server?.docker_available)
+    throw new HttpError(
+      409,
+      "Docker is not ready on this server. Install and start it from the Deplo root terminal before deploying.",
+    );
+  const domains = await prisma.domains.count({
+    where: { environment_id: environmentId },
+  });
+  if (domains && !server.caddy_available)
+    throw new HttpError(
+      409,
+      "Caddy is not ready on this server. Install and configure it before deploying an environment with domains.",
+    );
+}
 async function rateLimit(key: string, maximum: number) {
   const hash = sha256(key);
   const count = await prisma.login_attempts.count({
@@ -993,6 +1012,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
       const b = await body(request);
       const ref = b.imageRef ? imageRef(b.imageRef) : env.image_ref;
       if (!ref) throw new HttpError(400, "Configure an image first");
+      await requireDeploymentRuntime(env.server_id, env.id);
       const result = await prisma.$transaction(async (db) => {
         const d = await db.deployments.create({
           data: { environment_id: env.id, image_ref: ref },
@@ -1018,6 +1038,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
     ) {
       if (!env.active_deployment_id)
         throw new HttpError(409, "No active deployment");
+      await requireDeploymentRuntime(env.server_id, env.id);
       if (p[2] === "logs")
         await prisma.deployment_jobs.deleteMany({
           where: {
@@ -1064,6 +1085,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
         oldDeployment.environments_deployments_environment_idToenvironments
           .projects.server_id,
     };
+    await requireDeploymentRuntime(old.server_id, old.environment_id);
     const created = await prisma.$transaction(async (db) => {
       const d = await db.deployments.create({
         data: {

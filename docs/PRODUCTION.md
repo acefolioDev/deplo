@@ -1,63 +1,54 @@
-# Deploy Deplo to production
+# Deploy Deplo with Vercel and Neon
 
-This is the operator guide for the **Deplo control plane**. It runs the web app, PostgreSQL, and an HTTPS proxy on one Linux host. Managed application servers connect to it later; follow the [user guide](USER_GUIDE.md) for that step.
+This guide is for the person hosting the Deplo control plane. Vercel runs the dashboard and API; Neon stores its PostgreSQL data. Applications still run on developers' own Linux servers. Give those developers the [user guide](USER_GUIDE.md).
 
-## 1. Prepare the host and domain
+## 1. Create a Neon database
 
-- Use a Linux host with Docker Engine and the Docker Compose plugin. Keep this host separate from the VPSs where users deploy applications.
-- Point a DNS A record for your chosen name, such as `deplo.example.com`, to this host. Open inbound ports **80** and **443**. Nothing else should already be using those ports.
-- Install Git and OpenSSL. Clone this repository and enter its root directory.
+Create a Neon project in a region near the Vercel Function region you will use. In Neon's **Connect** dialog, copy two PostgreSQL connection strings for the same database and branch:
 
-## 2. Create configuration and start
+- **Pooled** connection (hostname contains `-pooler`): use as Deplo's `DATABASE_URL` on Vercel.
+- **Direct** connection (hostname does not contain `-pooler`): use as `DIRECT_URL` when applying Prisma migrations from your computer or CI.
 
-Run these commands from the repository root, replacing the domain:
+Keep both URLs private. The application uses the pooled URL because Vercel can start many Functions. Migrations use the direct URL.
 
-```sh
-bash scripts/init-production.sh deplo.example.com
-docker compose up -d --build
-docker compose ps
-```
+## 2. Apply the database schema
 
-The setup script creates a private `.env` containing the database password, encryption key, and registration code. It refuses to overwrite an existing file. Compose starts PostgreSQL, applies Prisma migrations, starts the web app, and then starts Caddy for HTTPS. Keep `.env` backed up securely; losing `ENCRYPTION_KEY` makes stored deployment secrets unreadable.
-
-Check the site:
+From the repository root on a computer with Node.js 22, install dependencies and set `DIRECT_URL` to the Neon direct connection string in your shell. Then run:
 
 ```sh
-curl -fsS https://deplo.example.com/api/auth/me
+npm ci
+npm run db:migrate
 ```
 
-You should receive JSON with `"user":null`. If HTTPS is not ready, check DNS, ports 80/443, and `docker compose logs caddy web migrate`.
+The command applies the checked-in Prisma migrations. Run it again before each deployment that changes the schema. Do not run migrations as part of a Vercel build: a preview or retry could otherwise change the shared database. Keep the direct URL out of Git and Vercel's runtime settings.
 
-## 3. Create accounts
+## 3. Create the Vercel project
 
-Open `https://deplo.example.com/register`. Give trusted developers the registration code from your `.env` file; they create their own accounts and sign in. Each account sees only its own servers, projects, and deployments. The code is required by this production stack, so an unrelated visitor cannot register. Deplo does not yet send email verification or password-reset messages; treat the code as an invite and share it privately.
+Push this repository to a Git provider and import it into Vercel. Set **Root Directory** to `apps/web`, **Framework Preset** to **Next.js**, and **Build Command** to `npm run build`. Choose Node.js 22 and a Function region near your Neon database. The app's build generates Prisma Client; it does not need to connect to Neon during the build.
 
-To read the code on the control-plane host:
+Add these environment variables to the Vercel **Production** environment:
 
-```sh
-sed -n 's/^REGISTRATION_CODE=//p' .env
-```
+| Name | Value |
+| --- | --- |
+| `DATABASE_URL` | Neon **pooled** connection string, including its TLS settings |
+| `ENCRYPTION_KEY` | New base64 key from `openssl rand -base64 32` |
+| `REGISTRATION_CODE` | New invite code from `openssl rand -hex 24` |
+| `PUBLIC_URL` | The exact HTTPS origin users will open, such as `https://deplo.example.com` |
 
-The developers then follow the [Deplo user guide](USER_GUIDE.md) to pair a VPS and deploy an image.
+`PUBLIC_URL` must have no trailing slash or path. If you use the Vercel-assigned `*.vercel.app` address, deploy once to see its exact URL, then set `PUBLIC_URL` and redeploy. Registration and other write actions require this variable. For a custom domain, connect it in Vercel, update DNS, and set `PUBLIC_URL` to that domain before using Deplo.
 
-## Update and backup
+Keep `ENCRYPTION_KEY` stable across redeployments. Losing it makes stored deployment secrets unreadable. Share `REGISTRATION_CODE` only with developers you trust; there is no email verification or password reset yet. Configure Preview deployments with a separate Neon branch and a matching `PUBLIC_URL` if you intend to use them; do not point previews at the production database.
 
-From the repository root, after reviewing changes:
+## 4. Verify and invite users
 
-```sh
-git pull
-docker compose up -d --build
-docker compose ps
-```
+After deployment, visit `https://YOUR-DEPLO-HOST/api/auth/me`. It should return JSON with `"user":null`. Open `/register`, create your account using the registration code, and sign in. Give trusted developers the Deplo URL and code. They can then follow the [user guide](USER_GUIDE.md) to pair a VPS.
 
-The migration service applies new Prisma migrations before the web app starts. Existing Deplo databases created with the older SQL migration runner are detected and adopted without dropping their data. Take a database backup before the first upgrade:
+The server installer and its Linux agent binaries are served from the deployed site's `/agent/` path. Check that `https://YOUR-DEPLO-HOST/agent/install.sh` downloads before pairing a server. The managed VPS still needs Docker; Caddy is optional for its application domains.
 
-```sh
-docker compose exec -T db pg_dump -U deplo deplo > deplo-backup.sql
-```
+## Updates and backups
 
-Back up `.env` alongside the database. Keep both files outside the host as well. `docker compose down` stops services but retains named database and Caddy volumes; **do not use** `docker compose down -v` unless you intend to remove their data.
+For a schema change, run `npm run db:migrate` with the Neon direct URL before promoting the matching application version. Deploy the application through Vercel. Back up Neon data using its backup/restore options or `pg_dump` against the direct connection. Keep the encryption key in a separate secure backup.
 
-## Current limits
+Neon's free plan is useful for intermittent testing. A connected agent checks for jobs at least every 30 seconds, so it can prevent Neon's five-minute scale-to-zero and consume the free compute allowance even when no application deploys. Stop the agent between test sessions or plan for a paid database if you need it connected all month. Check actual usage in Neon and Vercel. Vercel Hobby is intended for personal, noncommercial use.
 
-The application and Prisma migration path pass local build and integration tests. This exact Compose stack and a real Linux Mint agent deployment still require a live production-host smoke test. Deplo is for trusted developers managing their own VPSs; it is not a hardened environment for untrusted tenants. Root terminal access is optional on each managed server and gives full host control to that server's account owner.
+This Vercel and Neon deployment path is configured and passes local build and API tests, but needs a live deployment smoke test with your accounts and database.

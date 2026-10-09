@@ -4,15 +4,13 @@ set -Eeuo pipefail
 fail() { printf 'Deplo setup: %s\n' "$*" >&2; exit 1; }
 say() { printf 'Deplo setup: %s\n' "$*"; }
 
-[[ $# -ge 1 && $# -le 3 ]] || fail 'usage: sudo bash install.sh https://your-control-plane [--without-caddy] [--enable-root-terminal]'
+[[ $# -ge 1 && $# -le 2 ]] || fail 'usage: sudo bash install.sh https://your-control-plane [--without-root-terminal]'
 control_url="${1%/}"
 [[ "$control_url" =~ ^https://([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\])(:[0-9]+)?$ ]] || fail 'control plane URL must be an HTTPS origin without a path'
-with_caddy=1
-root_terminal=0
+root_terminal=1
 for option in "${@:2}"; do
   case "$option" in
-    --without-caddy) with_caddy=0 ;;
-    --enable-root-terminal) root_terminal=1 ;;
+    --without-root-terminal) root_terminal=0 ;;
     *) fail "unknown option: $option" ;;
   esac
 done
@@ -26,7 +24,6 @@ if [[ "${ID:-}" == linuxmint && "${VERSION_ID:-}" == 22.* && "$base" == "${VERSI
   base=noble
 fi
 [[ "$base" == noble ]] || fail 'this installer currently supports the Ubuntu 24.04 (noble) base'
-command -v apt-get >/dev/null || fail 'apt-get is required'
 command -v systemctl >/dev/null || fail 'systemd is required'
 command -v curl >/dev/null || fail 'curl is required to download the agent'
 command -v sha256sum >/dev/null || fail 'sha256sum is required'
@@ -46,39 +43,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
   "$control_url/agent/SHA256SUMS" -o "$tmp/SHA256SUMS"
 (cd "$tmp" && sha256sum --check --ignore-missing SHA256SUMS) || fail 'agent checksum verification failed'
 
-packages=()
-command -v docker >/dev/null || packages+=(docker.io)
-if ((with_caddy)) && ! command -v caddy >/dev/null; then packages+=(caddy); fi
-if ((${#packages[@]})); then
-  say "Installing missing Ubuntu packages: ${packages[*]}"
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends "${packages[@]}"
-fi
-systemctl enable --now docker || fail 'Docker did not start; inspect systemctl status docker'
-docker info >/dev/null || fail 'Docker is unavailable; inspect journalctl -u docker'
-
 install -d -o root -g root -m 0755 /etc/caddy/deplo
-if ((with_caddy)); then
-  say 'Preparing the shared Caddy proxy'
-  caddyfile=/etc/caddy/Caddyfile
-  [[ -f "$caddyfile" ]] || fail 'Caddyfile is missing after package installation'
-  cp -p "$caddyfile" "$tmp/Caddyfile.backup"
-  if ! grep -Fxq 'import /etc/caddy/deplo/*.caddy' "$caddyfile"; then
-    printf '\nimport /etc/caddy/deplo/*.caddy\n' >> "$caddyfile"
-  fi
-  if ! caddy validate --config "$caddyfile" --adapter caddyfile; then
-    cp -p "$tmp/Caddyfile.backup" "$caddyfile"
-    fail 'Caddy validation failed; the previous Caddyfile was restored'
-  fi
-  systemctl enable --now caddy || fail 'Caddy did not start; inspect systemctl status caddy'
-  if ! systemctl reload caddy; then
-    cp -p "$tmp/Caddyfile.backup" "$caddyfile"
-    systemctl reload caddy || true
-    fail 'Caddy reload failed; the previous Caddyfile was restored'
-  fi
-else
-  say 'Skipping Caddy; applications with domains will need an HTTPS router later'
-fi
 
 say 'Installing the Deplo agent service'
 install -d -o root -g root -m 0700 /etc/deplo-agent /var/lib/deplo-agent
@@ -103,7 +68,7 @@ chmod 0600 "$envfile"
 cat > /etc/systemd/system/deplo-agent.service <<'UNIT'
 [Unit]
 Description=Deplo deployment agent
-After=network-online.target docker.service caddy.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -144,4 +109,5 @@ if grep -q '^DEPLO_PAIR_TOKEN=' "$envfile"; then
   sed -i '/^DEPLO_PAIR_TOKEN=/d' "$envfile"
   systemctl restart deplo-agent
 fi
-say 'Agent is installed and paired. Refresh Servers; Online may take a few seconds.'
+say 'Agent is installed and paired. Docker and Caddy can be added later from the Deplo terminal.'
+say 'Refresh Servers; Online may take a few seconds.'

@@ -84,20 +84,7 @@ export async function validOrigin(request: Request) {
   if (!expected || !origin) return false;
   const host = (await headers()).get("host");
   if (!host) return false;
-  if (origin === new URL(expected).origin && new URL(expected).host === host)
-    return true;
-  if (process.env.DEPLO_LOCAL_DEMO !== "1") return false;
-  const allowed = new Set(["localhost:3456", "127.0.0.1:3456"]);
-  try {
-    const submitted = new URL(origin);
-    return (
-      submitted.protocol === "http:" &&
-      allowed.has(submitted.host) &&
-      allowed.has(host)
-    );
-  } catch {
-    return false;
-  }
+  return origin === new URL(expected).origin && new URL(expected).host === host;
 }
 export function cookieSettings() {
   return {

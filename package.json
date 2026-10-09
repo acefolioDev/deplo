@@ -6,15 +6,14 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @deplo/web",
-    "demo": "node scripts/demo.mjs",
     "agent:assets": "bash scripts/build-agent-assets.sh",
     "build": "npm run build -w @deplo/web",
     "typecheck": "npm run typecheck -w @deplo/web",
     "test": "npm run test -w @deplo/web && cd agent && go test ./...",
     "db:migrate": "node scripts/migrate.mjs",
     "db:generate": "prisma generate --schema apps/web/prisma/schema.prisma",
-    "format": "prettier --write 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
-    "format:check": "prettier --check 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
+    "format": "prettier --write 'apps/web/src/**/*.{ts,tsx,css}' apps/web/next.config.ts 'apps/web/tests/*.mjs' 'scripts/*.mjs'",
+    "format:check": "prettier --check 'apps/web/src/**/*.{ts,tsx,css}' apps/web/next.config.ts 'apps/web/tests/*.mjs' 'scripts/*.mjs'",
     "lint": "npm run lint -w @deplo/web"
   },
   "devDependencies": {
@@ -28,8 +27,5 @@
   },
   "overrides": {
     "deepmerge-ts": "8.0.2"
-  },
-  "dependencies": {
-    "@prisma/client": "^6.19.3"
   }
 }

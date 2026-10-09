@@ -26,6 +26,7 @@ if (!databaseURL) {
   const env = {
     ...process.env,
     DATABASE_URL: databaseURL,
+    DIRECT_URL: databaseURL,
     PUBLIC_URL: publicURL,
     ENCRYPTION_KEY: key,
     REGISTRATION_CODE: registrationCode,
@@ -44,7 +45,7 @@ if (!databaseURL) {
     assert.equal(migrated.status, 0, migrated.stderr);
     const server = spawn(
       process.execPath,
-      [root + "/apps/web/scripts/start.mjs"],
+      [root + "/node_modules/next/dist/bin/next", "start"],
       {
         cwd: new URL("..", import.meta.url).pathname,
         env: { ...env, PORT: String(port) },
@@ -166,7 +167,7 @@ if (!databaseURL) {
     const heartbeat = {
       version: "test",
       architecture: "amd64",
-      dockerAvailable: true,
+      dockerAvailable: false,
       caddyAvailable: false,
       terminalAvailable: true,
       metrics: {
@@ -179,6 +180,9 @@ if (!databaseURL) {
     };
     r = await call("agent/heartbeat", "POST", heartbeat, agentCredential);
     assert.equal(r.status, 200);
+    r = await call("servers", "GET", undefined, null, cookie);
+    assert.equal(r.data.servers[0].docker_available, false);
+    assert.equal(r.data.servers[0].terminal_available, true);
     r = await call(
       `servers/${serverId}/terminal`,
       "POST",
@@ -355,6 +359,16 @@ if (!databaseURL) {
       cookie,
     );
     assert.equal(JSON.stringify(r.data).includes("never-read-back"), false);
+    r = await call(`environments/${envId}/deploy`, "POST", {}, null, cookie);
+    assert.equal(r.status, 409, "Docker must be optional until deployment");
+    assert.match(r.data.error, /Docker is not ready/);
+    r = await call(
+      "agent/heartbeat",
+      "POST",
+      { ...heartbeat, dockerAvailable: true },
+      agentCredential,
+    );
+    assert.equal(r.status, 200);
     r = await call(`environments/${envId}/deploy`, "POST", {}, null, cookie);
     assert.equal(r.status, 201, JSON.stringify(r.data));
     const deploymentId = r.data.deployment.id;

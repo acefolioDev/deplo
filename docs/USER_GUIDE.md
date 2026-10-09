@@ -14,7 +14,7 @@ The **Connect a VPS** card displays one setup command. Caddy is selected when yo
 
 Copy the command to a terminal on the VPS and run it. The installer verifies the agent binary, installs missing packages, and asks for a pairing token. While it waits, click **Pair token** for that server in Deplo and paste the token into the VPS terminal. Refresh **Servers** until the server says **Online**. The token expires after ten minutes and is removed from the agent configuration after pairing.
 
-Your Deplo URL must use a publicly or privately trusted HTTPS certificate that the VPS accepts. A local `http://localhost` demo cannot connect a remote VPS.
+Your Deplo URL must use a trusted HTTPS certificate that the VPS accepts. A local HTTP development server cannot connect a remote VPS.
 
 ## 3. Deploy an application
 
