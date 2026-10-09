@@ -3,6 +3,7 @@ dist/
 .next/
 .env
 .env.local
+.deplo-local-demo.json
 *.tsbuildinfo
 agent/deplo-agent
 .DS_Store

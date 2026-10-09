@@ -83,9 +83,23 @@ export async function agentIdentity(request: Request) {
 export async function validOrigin(request: Request) {
   const origin = request.headers.get("origin");
   const expected = process.env.PUBLIC_URL;
-  if (!expected || !origin || origin !== new URL(expected).origin) return false;
+  if (!expected || !origin) return false;
   const host = (await headers()).get("host");
-  return !!host && new URL(expected).host === host;
+  if (!host) return false;
+  if (origin === new URL(expected).origin && new URL(expected).host === host)
+    return true;
+  if (process.env.DEPLO_LOCAL_DEMO !== "1") return false;
+  const allowed = new Set(["localhost:3456", "127.0.0.1:3456"]);
+  try {
+    const submitted = new URL(origin);
+    return (
+      submitted.protocol === "http:" &&
+      allowed.has(submitted.host) &&
+      allowed.has(host)
+    );
+  } catch {
+    return false;
+  }
 }
 export function cookieSettings() {
   return {

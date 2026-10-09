@@ -2,6 +2,10 @@
 
 **Deploy anywhere. Own everything.** Deplo is a hosted control plane for a trusted owner's Linux VPS. The Next.js dashboard and PostgreSQL database run separately; a small Go agent on each server leases jobs over outbound HTTPS and manages Docker containers.
 
+## Try it on this Mac
+
+With local PostgreSQL running, use `npm run demo`. The command creates a dedicated demo database, builds Deplo, creates a login, and starts it at [http://localhost:3456](http://localhost:3456). It prints the login credentials and keeps the app running until you press Ctrl+C. See the [short test guide](docs/quick-test.md). The command binds to localhost and does not alter other databases.
+
 ## Current state
 
 The repository has a control-plane and agent implementation for account bootstrap, sign in, server pairing, heartbeat, project environments, encrypted variables, queued deployments, Docker image rollout, bounded logs, container stop/restart, and Caddy route updates. The API integration test covers pairing and job state transitions. The agent's real Docker lifecycle test is opt in; the development Mac does not have a running Docker daemon. The complete Mac-to-Linux-Mint workflow and Linux performance targets have **not** been verified yet. See [implementation status](docs/implementation-status.md), [performance](docs/performance.md), and [deployment](docs/deployment.md) for exact limits.

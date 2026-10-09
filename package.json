@@ -6,6 +6,7 @@
   ],
   "scripts": {
     "dev": "npm run dev -w @deplo/web",
+    "demo": "node scripts/demo.mjs",
     "build": "npm run build -w @deplo/web",
     "typecheck": "npm run typecheck -w @deplo/web",
     "test": "npm run test -w @deplo/web && cd agent && go test ./...",
