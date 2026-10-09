@@ -1,0 +1,25 @@
+{
+  "name": "deplo",
+  "private": true,
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @deplo/web",
+    "build": "npm run build -w @deplo/web",
+    "typecheck": "npm run typecheck -w @deplo/web",
+    "test": "npm run test -w @deplo/web && cd agent && go test ./...",
+    "db:migrate": "node scripts/migrate.mjs",
+    "format": "prettier --write 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
+    "format:check": "prettier --check 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
+    "lint": "npm run lint -w @deplo/web"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "9.39.5",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "prettier": "3.9.9",
+    "typescript-eslint": "^8.71.1"
+  }
+}
