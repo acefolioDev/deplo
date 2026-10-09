@@ -2,6 +2,8 @@
 
 The repository is buildable and the control-plane integration test passes. The full two-machine workflow in the master brief is **not complete or verified**. Milestone reports below separate implemented code from verified behavior.
 
+**Optional root terminal:** implemented behind the guided installer's explicit checkbox. The owner re-enters a password, the API grants one ten-minute session per server, and the agent runs a root PTY over outbound HTTPS polling. The API session lifecycle is integration-tested; a live root shell on Linux Mint remains unverified. See [quick test](quick-test.md).
+
 ## Milestone 1 — Foundation
 
 **Implemented:** npm workspace, strict TypeScript Next.js App Router dashboard, PostgreSQL migrations, owner bootstrap/login/logout and database sessions, Go agent skeleton, configuration examples, architecture and local development guides.

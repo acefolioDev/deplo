@@ -7,13 +7,21 @@ Supported target: Ubuntu 24.04 LTS and Linux Mint 22.2 Cinnamon on the Ubuntu 24
 First expose the control plane at a trusted HTTPS URL. Register a server in **Servers** and copy its setup command to a terminal on that VPS. The command downloads the installer from your own control plane and runs it with `sudo`. Review the downloaded script before running if you prefer. The installer:
 
 1. Downloads the matching Linux agent binary and verifies its published SHA256 checksum.
-2. Installs missing `docker.io` and `caddy` packages from the configured Ubuntu/Mint package repositories; it leaves existing installations in place.
-3. Adds one Deplo Caddy import without replacing unrelated Caddyfile entries, validates and reloads Caddy, and installs the agent as a restricted systemd service.
+2. Installs a missing `docker.io` package from the configured Ubuntu/Mint package repositories. Caddy is selected by default for public HTTPS domains; uncheck that option in **Servers** to add `--without-caddy` and skip the Caddy package.
+3. When selected, adds one Deplo Caddy import without replacing unrelated Caddyfile entries, validates and reloads Caddy. It installs the agent as a restricted systemd service in either mode.
 4. Prompts for a pairing token **after** packages are ready. At that prompt, click **Pair token** in the dashboard and paste the token. It is not placed in shell history. After pairing, the installer removes the one-time token from the root-only environment file.
 
-Refresh **Servers** and check Online, Docker available, and Caddy ready. If setup fails, the installer prints the relevant service log. Keep HTTPS certificate validation enabled. The manual procedure below remains available for hosts with existing custom Docker/Caddy installations or for operators who want each step under their control.
+Refresh **Servers** and check Online and Docker available; check Caddy ready if you selected it. If setup fails, the installer prints the relevant service log. Keep HTTPS certificate validation enabled. The manual procedure below remains available for hosts with existing custom Docker/Caddy installations or for operators who want each step under their control.
+
+Without Caddy, Deplo can start and health-check images that have no domain configured. It does not publish a host port, so those containers are private to the VPS. Add a supported HTTPS router before configuring a public domain. The current domain integration supports Caddy only.
 
 When releasing a new agent version, run `npm run agent:assets` in the repository before building the control plane. This rebuilds both Linux binaries and their `SHA256SUMS` file for the hosted installer.
+
+### Optional root terminal
+
+Check **Enable root terminal in Deplo** before copying the setup command to add `--enable-root-terminal`. This is off by default. The installer stores `DEPLO_ROOT_TERMINAL=1` in the root-only agent environment file and removes the service's filesystem restrictions so the terminal has full host control. Refresh **Servers** after the next heartbeat and select **Root terminal**. Re-enter the Deplo owner password to start a ten-minute shell. Only one shell can be open on a server at a time. Closing the browser does not immediately close the remote shell; select **Close session** when finished, or it expires after ten minutes.
+
+To turn it off, rerun the setup command with the checkbox cleared. The installer removes the flag and reinstates the restricted service unit. Existing terminal sessions expire automatically; close one in Deplo first when possible.
 
 ## Manual installation
 

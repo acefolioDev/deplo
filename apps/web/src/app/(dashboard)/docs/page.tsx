@@ -17,7 +17,7 @@ export default function DocsPage() {
           [
             "02",
             "Install and pair the agent",
-            "Run the setup command shown in Servers on Ubuntu 24.04 or compatible Linux Mint. It installs missing Docker and Caddy packages, verifies the agent binary, and prompts for a one-time pairing token.",
+            "Run the setup command shown in Servers on Ubuntu 24.04 or compatible Linux Mint. It installs Docker and, if you choose public HTTPS domains, Caddy. It verifies the agent binary and prompts for a one-time pairing token.",
           ],
           [
             "03",

@@ -1,0 +1,185 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"log/slog"
+	"os"
+	"os/exec"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/creack/pty"
+)
+
+type terminalSession struct {
+	ID        string    `json:"id"`
+	ExpiresAt time.Time `json:"expiresAt"`
+	Inputs    []string  `json:"inputs"`
+	Cols      uint16    `json:"cols"`
+	Rows      uint16    `json:"rows"`
+}
+type terminalProcess struct {
+	id        string
+	file      *os.File
+	cmd       *exec.Cmd
+	output    chan string
+	done      chan struct{}
+	expiresAt time.Time
+	cols      uint16
+	rows      uint16
+}
+
+func startTerminal(session terminalSession) (*terminalProcess, error) {
+	cmd := exec.Command("/bin/bash", "-l")
+	cmd.Dir = "/root"
+	cmd.Env = []string{"HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/bash", "TERM=xterm-256color", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: session.Rows, Cols: session.Cols})
+	if err != nil {
+		return nil, err
+	}
+	p := &terminalProcess{id: session.ID, file: f, cmd: cmd, output: make(chan string, 64), done: make(chan struct{}), expiresAt: session.ExpiresAt, cols: session.Cols, rows: session.Rows}
+	go func() {
+		buffer := make([]byte, 4096)
+		for {
+			n, err := f.Read(buffer)
+			if n > 0 {
+				select {
+				case p.output <- base64.StdEncoding.EncodeToString(buffer[:n]):
+				default:
+				}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	go func() { _ = cmd.Wait(); close(p.done) }()
+	return p, nil
+}
+func (p *terminalProcess) close() {
+	if p == nil {
+		return
+	}
+	_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	_ = p.cmd.Process.Kill()
+	_ = p.file.Close()
+}
+func (a *api) runTerminal(ctx context.Context, logger *slog.Logger) {
+	var current *terminalProcess
+	var pending string
+	defer func() { current.close() }()
+	for ctx.Err() == nil {
+		if current != nil && !time.Now().Before(current.expiresAt) {
+			current.close()
+			current = nil
+			pending = ""
+		}
+		var reply struct {
+			Session *terminalSession `json:"session"`
+		}
+		pollCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		err := a.request(pollCtx, "POST", "/api/agent/terminal/poll", map[string]any{}, &reply, true)
+		cancel()
+		if err != nil {
+			logger.Warn("terminal poll failed", "error", err)
+			if strings.Contains(err.Error(), "HTTP 401") {
+				current.close()
+				return
+			}
+			if !terminalWait(ctx, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		if current != nil && (reply.Session == nil || current.id != reply.Session.ID || time.Now().After(reply.Session.ExpiresAt)) {
+			current.close()
+			current = nil
+			pending = ""
+		}
+		if reply.Session != nil && current == nil && time.Now().Before(reply.Session.ExpiresAt) {
+			current, err = startTerminal(*reply.Session)
+			if err != nil {
+				logger.Error("terminal start failed", "error", err)
+				_ = a.sendTerminalOutput(ctx, reply.Session.ID, "", true)
+			}
+		}
+		if current != nil {
+			if current.cols != reply.Session.Cols || current.rows != reply.Session.Rows {
+				if err := pty.Setsize(current.file, &pty.Winsize{Rows: reply.Session.Rows, Cols: reply.Session.Cols}); err == nil {
+					current.cols = reply.Session.Cols
+					current.rows = reply.Session.Rows
+				}
+			}
+			for _, encoded := range reply.Session.Inputs {
+				input, decodeErr := base64.StdEncoding.DecodeString(encoded)
+				if decodeErr == nil && len(input) <= 4096 {
+					_, _ = current.file.Write(input)
+				}
+			}
+			for i := 0; i < 16; i++ {
+				if pending != "" {
+					if err := a.sendTerminalOutput(ctx, current.id, pending, false); err != nil {
+						logger.Warn("terminal output failed", "error", err)
+						break
+					}
+					pending = ""
+				}
+				select {
+				case data := <-current.output:
+					if err := a.sendTerminalOutput(ctx, current.id, data, false); err != nil {
+						logger.Warn("terminal output failed", "error", err)
+						pending = data
+						break
+					}
+				default:
+					i = 16
+				}
+			}
+			select {
+			case <-current.done:
+				if pending != "" {
+					_ = a.sendTerminalOutput(ctx, current.id, pending, false)
+					pending = ""
+				}
+				for {
+					select {
+					case data := <-current.output:
+						_ = a.sendTerminalOutput(ctx, current.id, data, false)
+					default:
+						goto drained
+					}
+				}
+			drained:
+				_ = a.sendTerminalOutput(ctx, current.id, "", true)
+				current.close()
+				current = nil
+				pending = ""
+			default:
+			}
+		}
+		interval := 2 * time.Second
+		if current != nil {
+			interval = 250 * time.Millisecond
+		}
+		if !terminalWait(ctx, interval) {
+			return
+		}
+	}
+}
+func (a *api) sendTerminalOutput(ctx context.Context, id, data string, closed bool) error {
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return a.request(requestCtx, "POST", "/api/agent/terminal/output", map[string]any{"sessionId": id, "data": data, "closed": closed}, nil, true)
+}
+func terminalWait(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}

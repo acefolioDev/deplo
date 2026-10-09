@@ -156,6 +156,156 @@ if (!databaseURL) {
     r = await call("servers", "GET", undefined, null, cookie);
     assert.equal(r.data.servers[0].metrics.containers.length, 1);
     r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "strong-password-1234" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 409, "Root terminal must be disabled by default");
+    const heartbeat = {
+      version: "test",
+      architecture: "amd64",
+      dockerAvailable: true,
+      caddyAvailable: false,
+      terminalAvailable: true,
+      metrics: {
+        cpuPercent: 0,
+        memoryUsed: 0,
+        memoryTotal: 0,
+        diskUsed: 0,
+        diskTotal: 0,
+      },
+    };
+    r = await call("agent/heartbeat", "POST", heartbeat, agentCredential);
+    assert.equal(r.status, 200);
+    r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "wrong-password" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 401);
+    r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "strong-password-1234" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 201, JSON.stringify(r.data));
+    const terminalId = r.data.sessionId;
+    r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "strong-password-1234" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 409, "Only one open shell per server");
+    r = await call("agent/terminal/poll", "POST", {}, agentCredential);
+    assert.equal(r.data.session.id, terminalId);
+    r = await call(
+      `servers/${serverId}/terminal/${terminalId}/resize`,
+      "POST",
+      { cols: 112, rows: 37 },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 200);
+    r = await call(
+      `servers/${serverId}/terminal/${terminalId}/input`,
+      "POST",
+      { data: Buffer.from("echo deplo\n").toString("base64") },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 200);
+    const storedInput = await direct.query(
+      "SELECT data FROM terminal_inputs WHERE session_id=$1",
+      [terminalId],
+    );
+    assert.notEqual(
+      storedInput.rows[0].data,
+      Buffer.from("echo deplo\n").toString("base64"),
+    );
+    r = await call("agent/terminal/poll", "POST", {}, agentCredential);
+    assert.deepEqual(r.data.session.inputs, [
+      Buffer.from("echo deplo\n").toString("base64"),
+    ]);
+    assert.equal(r.data.session.cols, 112);
+    assert.equal(r.data.session.rows, 37);
+    r = await call(
+      "agent/terminal/output",
+      "POST",
+      {
+        sessionId: terminalId,
+        data: Buffer.from("deplo\r\n").toString("base64"),
+      },
+      agentCredential,
+    );
+    assert.equal(r.status, 200);
+    const storedOutput = await direct.query(
+      "SELECT data FROM terminal_outputs WHERE session_id=$1",
+      [terminalId],
+    );
+    assert.notEqual(
+      storedOutput.rows[0].data,
+      Buffer.from("deplo\r\n").toString("base64"),
+    );
+    r = await call(
+      `servers/${serverId}/terminal/${terminalId}`,
+      "GET",
+      undefined,
+      null,
+      cookie,
+    );
+    assert.equal(
+      Buffer.from(r.data.output[0].data, "base64").toString(),
+      "deplo\r\n",
+    );
+    r = await call(
+      `servers/${serverId}/terminal/${terminalId}/close`,
+      "POST",
+      {},
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 200);
+    r = await call("agent/terminal/poll", "POST", {}, agentCredential);
+    assert.equal(r.data.session, null);
+    r = await call(
+      "agent/terminal/output",
+      "POST",
+      { sessionId: terminalId, data: Buffer.from("late").toString("base64") },
+      agentCredential,
+    );
+    assert.equal(r.status, 409);
+    r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "strong-password-1234" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 201);
+    const expiredTerminalId = r.data.sessionId;
+    await direct.query(
+      "UPDATE terminal_sessions SET expires_at=now()-interval '1 second' WHERE id=$1",
+      [expiredTerminalId],
+    );
+    r = await call("agent/terminal/poll", "POST", {}, agentCredential);
+    assert.equal(r.data.session, null);
+    r = await call(
+      `servers/${serverId}/terminal/${expiredTerminalId}`,
+      "GET",
+      undefined,
+      null,
+      cookie,
+    );
+    assert.equal(r.data.status, "closed");
+    r = await call(
       "projects",
       "POST",
       { name: "api-test", serverId },

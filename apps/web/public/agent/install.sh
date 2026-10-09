@@ -4,9 +4,18 @@ set -Eeuo pipefail
 fail() { printf 'Deplo setup: %s\n' "$*" >&2; exit 1; }
 say() { printf 'Deplo setup: %s\n' "$*"; }
 
-[[ $# -eq 1 ]] || fail 'usage: sudo bash install.sh https://your-control-plane'
+[[ $# -ge 1 && $# -le 3 ]] || fail 'usage: sudo bash install.sh https://your-control-plane [--without-caddy] [--enable-root-terminal]'
 control_url="${1%/}"
 [[ "$control_url" =~ ^https://([a-zA-Z0-9.-]+|\[[0-9a-fA-F:]+\])(:[0-9]+)?$ ]] || fail 'control plane URL must be an HTTPS origin without a path'
+with_caddy=1
+root_terminal=0
+for option in "${@:2}"; do
+  case "$option" in
+    --without-caddy) with_caddy=0 ;;
+    --enable-root-terminal) root_terminal=1 ;;
+    *) fail "unknown option: $option" ;;
+  esac
+done
 [[ "${EUID}" -eq 0 ]] || fail 'run this installer with sudo'
 [[ -r /etc/os-release ]] || fail 'cannot identify Linux distribution'
 # shellcheck source=/dev/null
@@ -39,7 +48,7 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 
 packages=()
 command -v docker >/dev/null || packages+=(docker.io)
-command -v caddy >/dev/null || packages+=(caddy)
+if ((with_caddy)) && ! command -v caddy >/dev/null; then packages+=(caddy); fi
 if ((${#packages[@]})); then
   say "Installing missing Ubuntu packages: ${packages[*]}"
   apt-get update
@@ -48,23 +57,27 @@ fi
 systemctl enable --now docker || fail 'Docker did not start; inspect systemctl status docker'
 docker info >/dev/null || fail 'Docker is unavailable; inspect journalctl -u docker'
 
-say 'Preparing the shared Caddy proxy'
 install -d -o root -g root -m 0755 /etc/caddy/deplo
-caddyfile=/etc/caddy/Caddyfile
-[[ -f "$caddyfile" ]] || fail 'Caddyfile is missing after package installation'
-cp -p "$caddyfile" "$tmp/Caddyfile.backup"
-if ! grep -Fxq 'import /etc/caddy/deplo/*.caddy' "$caddyfile"; then
-  printf '\nimport /etc/caddy/deplo/*.caddy\n' >> "$caddyfile"
-fi
-if ! caddy validate --config "$caddyfile" --adapter caddyfile; then
-  cp -p "$tmp/Caddyfile.backup" "$caddyfile"
-  fail 'Caddy validation failed; the previous Caddyfile was restored'
-fi
-systemctl enable --now caddy || fail 'Caddy did not start; inspect systemctl status caddy'
-if ! systemctl reload caddy; then
-  cp -p "$tmp/Caddyfile.backup" "$caddyfile"
-  systemctl reload caddy || true
-  fail 'Caddy reload failed; the previous Caddyfile was restored'
+if ((with_caddy)); then
+  say 'Preparing the shared Caddy proxy'
+  caddyfile=/etc/caddy/Caddyfile
+  [[ -f "$caddyfile" ]] || fail 'Caddyfile is missing after package installation'
+  cp -p "$caddyfile" "$tmp/Caddyfile.backup"
+  if ! grep -Fxq 'import /etc/caddy/deplo/*.caddy' "$caddyfile"; then
+    printf '\nimport /etc/caddy/deplo/*.caddy\n' >> "$caddyfile"
+  fi
+  if ! caddy validate --config "$caddyfile" --adapter caddyfile; then
+    cp -p "$tmp/Caddyfile.backup" "$caddyfile"
+    fail 'Caddy validation failed; the previous Caddyfile was restored'
+  fi
+  systemctl enable --now caddy || fail 'Caddy did not start; inspect systemctl status caddy'
+  if ! systemctl reload caddy; then
+    cp -p "$tmp/Caddyfile.backup" "$caddyfile"
+    systemctl reload caddy || true
+    fail 'Caddy reload failed; the previous Caddyfile was restored'
+  fi
+else
+  say 'Skipping Caddy; applications with domains will need an HTTPS router later'
 fi
 
 say 'Installing the Deplo agent service'
@@ -83,6 +96,8 @@ if [[ ! -s /var/lib/deplo-agent/identity.json ]]; then
 elif [[ ! -f "$envfile" ]]; then
   (umask 077; printf 'DEPLO_URL=%s\nDEPLO_CREDENTIAL_FILE=/var/lib/deplo-agent/identity.json\n' "$control_url" > "$envfile")
 fi
+sed -i '/^DEPLO_ROOT_TERMINAL=/d' "$envfile"
+if ((root_terminal)); then printf 'DEPLO_ROOT_TERMINAL=1\n' >> "$envfile"; fi
 chmod 0600 "$envfile"
 
 cat > /etc/systemd/system/deplo-agent.service <<'UNIT'
@@ -108,6 +123,10 @@ MemoryMax=128M
 [Install]
 WantedBy=multi-user.target
 UNIT
+if ((root_terminal)); then
+  # The terminal must be able to administer the host, not a protected systemd view.
+  sed -i '/^PrivateTmp=/d; /^ProtectSystem=/d; /^ProtectHome=/d; /^ReadWritePaths=/d; /^MemoryMax=/d; /^NoNewPrivileges=/d' /etc/systemd/system/deplo-agent.service
+fi
 systemctl daemon-reload
 systemctl enable --now deplo-agent || fail 'agent did not start; inspect journalctl -u deplo-agent'
 

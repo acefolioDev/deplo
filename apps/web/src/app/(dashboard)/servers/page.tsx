@@ -1,6 +1,13 @@
 "use client";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { Plus, Server, RefreshCw, KeyRound, ShieldX } from "lucide-react";
+import {
+  Plus,
+  Server,
+  RefreshCw,
+  KeyRound,
+  ShieldX,
+  Terminal,
+} from "lucide-react";
 import { api, post } from "@/components/api";
 import { Button, Card, Input, Pill, SectionHead } from "@/components/ui";
 type ServerInfo = {
@@ -14,6 +21,7 @@ type ServerInfo = {
   architecture: string | null;
   docker_available: boolean;
   caddy_available: boolean;
+  terminal_available: boolean;
   metrics: {
     cpuPercent: number;
     memoryUsed: number;
@@ -37,7 +45,9 @@ export default function ServersPage() {
     () => window.location.origin,
     () => "",
   );
-  const installCommand = `curl -fsSLo /tmp/deplo-install.sh ${origin}/agent/install.sh && sudo bash /tmp/deplo-install.sh ${origin}`;
+  const [withCaddy, setWithCaddy] = useState(true);
+  const [rootTerminal, setRootTerminal] = useState(false);
+  const installCommand = `curl -fsSLo /tmp/deplo-install.sh ${origin}/agent/install.sh && sudo bash /tmp/deplo-install.sh ${origin}${withCaddy ? "" : " --without-caddy"}${rootTerminal ? " --enable-root-terminal" : ""}`;
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
@@ -148,11 +158,36 @@ export default function ServersPage() {
               <h2 className="font-semibold">Connect a VPS</h2>
               <p className="mt-2 text-sm leading-6 text-slate-400">
                 Run one command on an Ubuntu 24.04 or Linux Mint 22.2 Cinnamon
-                server. The installer sets up missing Docker and Caddy packages,
-                verifies the agent binary, and creates its service. When it asks
-                for a token, click <strong>Pair token</strong> on your server
-                below and paste it into the terminal.
+                server. The installer sets up Docker and the agent service. It
+                adds Caddy when you want public HTTPS domains. When it asks for
+                a token, click <strong>Pair token</strong> on your server below
+                and paste it into the terminal.
               </p>
+              <label className="mt-4 flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={withCaddy}
+                  onChange={(e) => setWithCaddy(e.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Enable public HTTPS domains with Caddy
+              </label>
+              <label className="mt-3 flex items-center gap-2 text-sm text-slate-300">
+                <input
+                  type="checkbox"
+                  checked={rootTerminal}
+                  onChange={(e) => setRootTerminal(e.target.checked)}
+                  className="accent-emerald-400"
+                />
+                Enable root terminal in Deplo
+              </label>
+              {rootTerminal && (
+                <p className="mt-2 text-xs text-amber-200">
+                  This grants full control of the server from your Deplo
+                  account. Opening a session requires your password again and
+                  expires after 10 minutes.
+                </p>
+              )}
               {origin.startsWith("https://") ? (
                 <>
                   <pre className="mt-4 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-4 text-xs leading-5 text-emerald-200">
@@ -291,6 +326,14 @@ export default function ServersPage() {
                     Caddy {s.caddy_available ? "ready" : "not ready"}
                   </span>
                   <span className="flex-1" />
+                  {s.connected && s.terminal_available && (
+                    <a
+                      href={`/servers/${s.id}/terminal`}
+                      className="inline-flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-200 hover:bg-white/5"
+                    >
+                      <Terminal size={14} /> Root terminal
+                    </a>
+                  )}
                   <Button variant="secondary" onClick={() => void pair(s.id)}>
                     <KeyRound size={14} />
                     Pair token

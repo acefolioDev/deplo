@@ -31,6 +31,7 @@ type config struct {
 	PairToken      string
 	Caddyfile      string
 	CaddySites     string
+	RootTerminal   bool
 }
 type identity struct {
 	ServerID   string `json:"serverId"`
@@ -64,7 +65,7 @@ type api struct {
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	cfg := config{URL: strings.TrimRight(os.Getenv("DEPLO_URL"), "/"), CredentialFile: env("DEPLO_CREDENTIAL_FILE", "/var/lib/deplo-agent/identity.json"), PairToken: os.Getenv("DEPLO_PAIR_TOKEN"), Caddyfile: env("DEPLO_CADDYFILE", "/etc/caddy/Caddyfile"), CaddySites: env("DEPLO_CADDY_SITES", "/etc/caddy/deplo")}
+	cfg := config{URL: strings.TrimRight(os.Getenv("DEPLO_URL"), "/"), CredentialFile: env("DEPLO_CREDENTIAL_FILE", "/var/lib/deplo-agent/identity.json"), PairToken: os.Getenv("DEPLO_PAIR_TOKEN"), Caddyfile: env("DEPLO_CADDYFILE", "/etc/caddy/Caddyfile"), CaddySites: env("DEPLO_CADDY_SITES", "/etc/caddy/deplo"), RootTerminal: os.Getenv("DEPLO_ROOT_TERMINAL") == "1"}
 	if cfg.URL == "" || (!strings.HasPrefix(cfg.URL, "https://") && !strings.HasPrefix(cfg.URL, "http://127.0.0.1:") && !strings.HasPrefix(cfg.URL, "http://localhost:")) {
 		logger.Error("DEPLO_URL must use HTTPS (localhost is allowed for development)")
 		os.Exit(1)
@@ -112,6 +113,13 @@ func main() {
 		a.identity = id
 	}
 	logger.Info("agent started", "version", version, "serverId", id.ServerID)
+	if cfg.RootTerminal {
+		if os.Geteuid() != 0 {
+			logger.Error("root terminal requires the agent to run as root")
+			os.Exit(1)
+		}
+		go a.runTerminal(ctx, logger)
+	}
 	nextHeartbeat := time.Time{}
 	idle := 2 * time.Second
 	for ctx.Err() == nil {
@@ -142,7 +150,7 @@ func main() {
 				}
 			}
 			metricReport := map[string]any{"cpuPercent": m.CPUPercent, "memoryUsed": m.MemoryUsed, "memoryTotal": m.MemoryTotal, "diskUsed": m.DiskUsed, "diskTotal": m.DiskTotal, "containers": containers}
-			err := a.request(ctx, "POST", "/api/agent/heartbeat", map[string]any{"version": version, "architecture": runtime.GOARCH, "dockerAvailable": dockerReady, "caddyAvailable": caddyReady, "metrics": metricReport}, nil, true)
+			err := a.request(ctx, "POST", "/api/agent/heartbeat", map[string]any{"version": version, "architecture": runtime.GOARCH, "dockerAvailable": dockerReady, "caddyAvailable": caddyReady, "terminalAvailable": cfg.RootTerminal, "metrics": metricReport}, nil, true)
 			if err != nil {
 				logger.Warn("heartbeat failed", "error", err)
 			}

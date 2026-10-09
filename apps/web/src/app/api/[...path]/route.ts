@@ -98,6 +98,30 @@ async function rateLimit(key: string, maximum: number) {
   if (r.rows[0].count >= maximum) throw new HttpError(429, "Too many attempts");
   await pool.query("INSERT INTO login_attempts(key_hash) VALUES($1)", [hash]);
 }
+function terminalData(value: unknown, maxBytes: number) {
+  if (
+    typeof value !== "string" ||
+    value.length > Math.ceil((maxBytes * 4) / 3) + 4 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
+      value,
+    )
+  )
+    throw new HttpError(400, "Invalid terminal data");
+  const bytes = Buffer.from(value, "base64");
+  if (!bytes.length || bytes.length > maxBytes)
+    throw new HttpError(400, "Invalid terminal data size");
+  return value;
+}
+async function expireTerminals() {
+  const expired = await pool.query(
+    "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE status<>'closed' AND expires_at<=now() RETURNING id,user_id,server_id",
+  );
+  for (const x of expired.rows)
+    await audit(x.user_id, x.server_id, "root_terminal.expire", x.id);
+  await pool.query(
+    "DELETE FROM terminal_sessions WHERE status='closed' AND closed_at<now()-interval '1 day'",
+  );
+}
 
 async function handle(request: NextRequest, path: string[], method: string) {
   const p = path;
@@ -236,7 +260,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
         containers,
       };
       await pool.query(
-        `UPDATE servers SET status='online',last_seen_at=now(),agent_version=$2,docker_available=$3,caddy_available=$4,metrics=$5,architecture=$6 WHERE id=$1`,
+        `UPDATE servers SET status='online',last_seen_at=now(),agent_version=$2,docker_available=$3,caddy_available=$4,metrics=$5,architecture=$6,terminal_available=$7 WHERE id=$1`,
         [
           agent.server_id,
           str(b.version, "version", 64),
@@ -244,8 +268,87 @@ async function handle(request: NextRequest, path: string[], method: string) {
           b.caddyAvailable === true,
           JSON.stringify(validated),
           b.architecture ? str(b.architecture, "architecture", 32) : null,
+          b.terminalAvailable === true,
         ],
       );
+      if (b.terminalAvailable !== true) {
+        const closed = await pool.query(
+          "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE server_id=$1 AND status<>'closed' RETURNING id,user_id",
+          [agent.server_id],
+        );
+        for (const x of closed.rows)
+          await audit(
+            x.user_id,
+            agent.server_id,
+            "root_terminal.disabled",
+            x.id,
+          );
+      }
+      return json({ ok: true });
+    }
+    if (p[1] === "terminal" && p[2] === "poll" && method === "POST") {
+      await expireTerminals();
+      const result = await transaction(async (c) => {
+        const sessions = await c.query(
+          "SELECT id,expires_at,cols,rows FROM terminal_sessions WHERE server_id=$1 AND status IN ('pending','active') ORDER BY created_at LIMIT 1 FOR UPDATE",
+          [agent.server_id],
+        );
+        if (!sessions.rowCount) return null;
+        const session = sessions.rows[0];
+        await c.query(
+          "UPDATE terminal_sessions SET status='active' WHERE id=$1",
+          [session.id],
+        );
+        const inputs = await c.query(
+          "DELETE FROM terminal_inputs WHERE id IN (SELECT id FROM terminal_inputs WHERE session_id=$1 ORDER BY id LIMIT 32 FOR UPDATE SKIP LOCKED) RETURNING id,data",
+          [session.id],
+        );
+        return {
+          id: session.id,
+          expiresAt: session.expires_at,
+          cols: session.cols,
+          rows: session.rows,
+          inputs: inputs.rows
+            .sort((a, b) => Number(a.id) - Number(b.id))
+            .map((x) => decrypt(x.data)),
+        };
+      });
+      return json({ session: result });
+    }
+    if (p[1] === "terminal" && p[2] === "output" && method === "POST") {
+      const b = await body(request);
+      const sessionId = uuid(b.sessionId);
+      const data = b.data === "" ? "" : terminalData(b.data, 8192);
+      const closed = b.closed === true;
+      await transaction(async (c) => {
+        const r = await c.query(
+          "SELECT id FROM terminal_sessions WHERE id=$1 AND server_id=$2 AND status='active' AND expires_at>now() FOR UPDATE",
+          [sessionId, agent.server_id],
+        );
+        if (!r.rowCount) throw new HttpError(409, "Terminal session closed");
+        if (data) {
+          await c.query(
+            "INSERT INTO terminal_outputs(session_id,data) VALUES($1,$2)",
+            [sessionId, encrypt(data)],
+          );
+          await c.query(
+            "DELETE FROM terminal_outputs WHERE session_id=$1 AND id NOT IN (SELECT id FROM terminal_outputs WHERE session_id=$1 ORDER BY id DESC LIMIT 32)",
+            [sessionId],
+          );
+        }
+        if (closed)
+          await c.query(
+            "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1",
+            [sessionId],
+          );
+      });
+      if (closed)
+        await audit(
+          null,
+          agent.server_id,
+          "root_terminal.process_exit",
+          sessionId,
+        );
       return json({ ok: true });
     }
     if (p[1] === "rotate" && method === "POST") {
@@ -447,7 +550,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
   if (p[0] === "servers") {
     if (p.length === 1 && method === "GET") {
       const r = await pool.query(
-        `SELECT id,name,ip,description,status,agent_version,architecture,docker_available,caddy_available,metrics,last_seen_at,created_at,
+        `SELECT id,name,ip,description,status,agent_version,architecture,docker_available,caddy_available,terminal_available,metrics,last_seen_at,created_at,
         (last_seen_at>now()-interval '3 minutes' AND status='online') AS connected FROM servers WHERE user_id=$1 ORDER BY created_at DESC`,
         [user.id],
       );
@@ -470,6 +573,116 @@ async function handle(request: NextRequest, path: string[], method: string) {
     }
     if (p[1]) {
       const server = await ownedServer(uuid(p[1]), user.id);
+      if (p[2] === "terminal") {
+        await expireTerminals();
+        if (p.length === 3 && method === "POST") {
+          if (
+            !server.terminal_available ||
+            server.status !== "online" ||
+            !server.last_seen_at ||
+            Date.now() - new Date(server.last_seen_at).getTime() > 180000
+          )
+            throw new HttpError(
+              409,
+              "Root terminal is unavailable on this server",
+            );
+          const b = await body(request);
+          await rateLimit(`terminal:${user.id}`, 5);
+          const password = str(b.password, "password", 256);
+          const owner = await pool.query(
+            "SELECT password_hash FROM users WHERE id=$1",
+            [user.id],
+          );
+          if (
+            !owner.rowCount ||
+            !(await verifyPassword(password, owner.rows[0].password_hash))
+          )
+            throw new HttpError(401, "Incorrect password");
+          const r = await pool.query(
+            "INSERT INTO terminal_sessions(server_id,user_id,expires_at) VALUES($1,$2,now()+interval '10 minutes') RETURNING id,expires_at",
+            [server.id, user.id],
+          );
+          await audit(user.id, server.id, "root_terminal.open", r.rows[0].id);
+          return json(
+            { sessionId: r.rows[0].id, expiresAt: r.rows[0].expires_at },
+            201,
+          );
+        }
+        if (p[3]) {
+          const sessionId = uuid(p[3]);
+          const r = await pool.query(
+            "SELECT id,status,expires_at FROM terminal_sessions WHERE id=$1 AND server_id=$2 AND user_id=$3",
+            [sessionId, server.id, user.id],
+          );
+          if (!r.rowCount)
+            throw new HttpError(404, "Terminal session not found");
+          const session = r.rows[0];
+          if (p.length === 4 && method === "GET") {
+            const after = Number(
+              new URL(request.url).searchParams.get("after") ?? "0",
+            );
+            if (!Number.isSafeInteger(after) || after < 0)
+              throw new HttpError(400, "Invalid output cursor");
+            const output = await pool.query(
+              "SELECT id,data FROM terminal_outputs WHERE session_id=$1 AND id>$2 ORDER BY id LIMIT 50",
+              [sessionId, after],
+            );
+            return json({
+              status: session.status,
+              expiresAt: session.expires_at,
+              output: output.rows.map((x) => ({
+                id: x.id,
+                data: decrypt(x.data),
+              })),
+            });
+          }
+          if (p[4] === "input" && method === "POST") {
+            if (session.status === "closed")
+              throw new HttpError(409, "Terminal session closed");
+            const b = await body(request);
+            const data = terminalData(b.data, 4096);
+            await pool.query(
+              "INSERT INTO terminal_inputs(session_id,data) VALUES($1,$2)",
+              [sessionId, encrypt(data)],
+            );
+            return json({ ok: true });
+          }
+          if (p[4] === "resize" && method === "POST") {
+            if (session.status === "closed")
+              throw new HttpError(409, "Terminal session closed");
+            const b = await body(request);
+            const cols = Number(b.cols);
+            const rows = Number(b.rows);
+            if (
+              !Number.isInteger(cols) ||
+              cols < 20 ||
+              cols > 300 ||
+              !Number.isInteger(rows) ||
+              rows < 5 ||
+              rows > 100
+            )
+              throw new HttpError(400, "Invalid terminal size");
+            await pool.query(
+              "UPDATE terminal_sessions SET cols=$2,rows=$3 WHERE id=$1",
+              [sessionId, cols, rows],
+            );
+            return json({ ok: true });
+          }
+          if (p[4] === "close" && method === "POST") {
+            const closed = await pool.query(
+              "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1 AND status<>'closed' RETURNING id",
+              [sessionId],
+            );
+            await pool.query(
+              "DELETE FROM terminal_inputs WHERE session_id=$1",
+              [sessionId],
+            );
+            if (closed.rowCount)
+              await audit(user.id, server.id, "root_terminal.close", sessionId);
+            return json({ ok: true });
+          }
+        }
+      }
       if (p[2] === "pair" && method === "POST") {
         const token = secret();
         await pool.query(
@@ -480,7 +693,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
         return json({ token, expiresInSeconds: 600 });
       }
       if (p[2] === "revoke" && method === "POST") {
-        await transaction(async (c) => {
+        const closed = await transaction(async (c) => {
           await c.query(
             "UPDATE agent_credentials SET revoked_at=now() WHERE server_id=$1",
             [server.id],
@@ -488,7 +701,15 @@ async function handle(request: NextRequest, path: string[], method: string) {
           await c.query("UPDATE servers SET status='revoked' WHERE id=$1", [
             server.id,
           ]);
+          return (
+            await c.query(
+              "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE server_id=$1 AND status<>'closed' RETURNING id",
+              [server.id],
+            )
+          ).rows;
         });
+        for (const x of closed)
+          await audit(user.id, server.id, "root_terminal.revoked", x.id);
         await audit(user.id, server.id, "server.revoke", server.id);
         return json({ ok: true });
       }

@@ -128,6 +128,7 @@ For a domain test, use a hostname you control with DNS A/AAAA records pointing t
 | Domain and certificate, if configured | DNS resolves; HTTPS valid; redirect works | |
 | Agent outage and recovery | App stays available; agent reconnects | |
 | Rotation and revocation | Rotation reconnects; revocation blocks jobs | |
+| Optional root terminal | Password required; `whoami` returns `root`; close and expiry end the shell | |
 | Mint resource and timing measurements | Actual RSS, CPU, startup and deployment timings recorded | |
 
 When a check fails, record the action, time, deployment ID, visible error, `journalctl -u deplo-agent` excerpt, Caddy error excerpt, and relevant Deplo deployment status. Redact tokens, cookies, environment values, and the identity credential before sharing. See [troubleshooting](troubleshooting.md).
