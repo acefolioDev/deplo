@@ -125,7 +125,7 @@ WantedBy=multi-user.target
 UNIT
 if ((root_terminal)); then
   # The terminal must be able to administer the host, not a protected systemd view.
-  sed -i '/^PrivateTmp=/d; /^ProtectSystem=/d; /^ProtectHome=/d; /^ReadWritePaths=/d; /^MemoryMax=/d; /^NoNewPrivileges=/d' /etc/systemd/system/deplo-agent.service
+  sed -i '/^PrivateTmp=/d; /^ProtectSystem=/d; /^ProtectHome=/d; /^ReadWritePaths=/d; /^MemoryMax=/d; /^NoNewPrivileges=/d; /^RestrictAddressFamilies=/d' /etc/systemd/system/deplo-agent.service
 fi
 systemctl daemon-reload
 systemctl enable --now deplo-agent || fail 'agent did not start; inspect journalctl -u deplo-agent'

@@ -637,19 +637,29 @@ async function handle(request: NextRequest, path: string[], method: string) {
             });
           }
           if (p[4] === "input" && method === "POST") {
-            if (session.status === "closed")
-              throw new HttpError(409, "Terminal session closed");
             const b = await body(request);
             const data = terminalData(b.data, 4096);
-            await pool.query(
-              "INSERT INTO terminal_inputs(session_id,data) VALUES($1,$2)",
-              [sessionId, encrypt(data)],
-            );
+            await transaction(async (c) => {
+              const active = await c.query(
+                "SELECT id FROM terminal_sessions WHERE id=$1 AND status IN ('pending','active') AND expires_at>now() FOR UPDATE",
+                [sessionId],
+              );
+              if (!active.rowCount)
+                throw new HttpError(409, "Terminal session closed");
+              const queued = await c.query(
+                "SELECT count(*)::int AS count FROM terminal_inputs WHERE session_id=$1",
+                [sessionId],
+              );
+              if (queued.rows[0].count >= 128)
+                throw new HttpError(429, "Terminal input queue is full");
+              await c.query(
+                "INSERT INTO terminal_inputs(session_id,data) VALUES($1,$2)",
+                [sessionId, encrypt(data)],
+              );
+            });
             return json({ ok: true });
           }
           if (p[4] === "resize" && method === "POST") {
-            if (session.status === "closed")
-              throw new HttpError(409, "Terminal session closed");
             const b = await body(request);
             const cols = Number(b.cols);
             const rows = Number(b.rows);
@@ -662,22 +672,26 @@ async function handle(request: NextRequest, path: string[], method: string) {
               rows > 100
             )
               throw new HttpError(400, "Invalid terminal size");
-            await pool.query(
-              "UPDATE terminal_sessions SET cols=$2,rows=$3 WHERE id=$1",
+            const resized = await pool.query(
+              "UPDATE terminal_sessions SET cols=$2,rows=$3 WHERE id=$1 AND status IN ('pending','active') AND expires_at>now() RETURNING id",
               [sessionId, cols, rows],
             );
+            if (!resized.rowCount)
+              throw new HttpError(409, "Terminal session closed");
             return json({ ok: true });
           }
           if (p[4] === "close" && method === "POST") {
-            const closed = await pool.query(
-              "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1 AND status<>'closed' RETURNING id",
-              [sessionId],
-            );
-            await pool.query(
-              "DELETE FROM terminal_inputs WHERE session_id=$1",
-              [sessionId],
-            );
-            if (closed.rowCount)
+            const closed = await transaction(async (c) => {
+              const changed = await c.query(
+                "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1 AND status<>'closed' RETURNING id",
+                [sessionId],
+              );
+              await c.query("DELETE FROM terminal_inputs WHERE session_id=$1", [
+                sessionId,
+              ]);
+              return changed.rowCount;
+            });
+            if (closed)
               await audit(user.id, server.id, "root_terminal.close", sessionId);
             return json({ ok: true });
           }

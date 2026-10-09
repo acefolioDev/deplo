@@ -283,6 +283,14 @@ if (!databaseURL) {
     );
     assert.equal(r.status, 409);
     r = await call(
+      `servers/${serverId}/terminal/${terminalId}/input`,
+      "POST",
+      { data: Buffer.from("late").toString("base64") },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 409, "Closed shell must reject input");
+    r = await call(
       `servers/${serverId}/terminal`,
       "POST",
       { password: "strong-password-1234" },
