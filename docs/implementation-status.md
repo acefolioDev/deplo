@@ -12,11 +12,11 @@ The repository is buildable and the control-plane integration test passes. The f
 
 ## Milestone 2 — Pairing
 
-**Implemented:** registered servers, hashed ten-minute single-use tokens, agent credential issuance, authenticated heartbeat, version/architecture/host usage report, revocation, and a credential rotation API.
+**Implemented:** registered servers, hashed ten-minute single-use tokens, agent credential issuance, authenticated heartbeat, version/architecture/host usage report, revocation, a credential rotation API, and a guided Ubuntu/Mint installer served from the control plane.
 
 **Verified:** API integration tests for token expiry and reuse, heartbeat, ownership, and revocation.
 
-**Remaining:** end-to-end systemd installation/pairing and a live credential rotation on Linux Mint. The two-step rotation flow has an API integration test; the agent persistence path has not run on that host.
+**Remaining:** run the guided installer, systemd pairing, and a live credential rotation on Linux Mint. The two-step rotation flow has an API integration test; the agent persistence path and installer have not run on that host.
 
 ## Milestone 3 — Deployment
 

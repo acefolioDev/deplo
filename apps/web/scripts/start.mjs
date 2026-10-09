@@ -9,6 +9,9 @@ await fs.cp(
   path.join(standalone, ".next/static"),
   { recursive: true },
 );
+await fs.cp(path.join(app, "public"), path.join(standalone, "public"), {
+  recursive: true,
+});
 const child = spawn(process.execPath, [path.join(standalone, "server.js")], {
   stdio: "inherit",
   env: { ...process.env, HOSTNAME: process.env.HOSTNAME ?? "0.0.0.0" },

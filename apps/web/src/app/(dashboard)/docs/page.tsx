@@ -17,7 +17,7 @@ export default function DocsPage() {
           [
             "02",
             "Install and pair the agent",
-            "Install Docker Engine and Caddy on Ubuntu 24.04 or compatible Linux Mint. Verify the Deplo agent release checksum, install its systemd service, then enter the one-time token.",
+            "Run the setup command shown in Servers on Ubuntu 24.04 or compatible Linux Mint. It installs missing Docker and Caddy packages, verifies the agent binary, and prompts for a one-time pairing token.",
           ],
           [
             "03",

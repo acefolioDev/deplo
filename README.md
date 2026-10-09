@@ -17,7 +17,7 @@ Requirements: Node 22, Go 1.26, PostgreSQL 16+, Docker Engine and Caddy on the m
 1. Create a PostgreSQL database and copy `.env.example` to `.env.local`. Generate secrets with `openssl rand -base64 32` for `ENCRYPTION_KEY` and `openssl rand -hex 32` for `BOOTSTRAP_TOKEN`.
 2. Export the same variables in your shell or load `.env.local` before running the migration: `npm install && npm run db:migrate`.
 3. Run `npm run dev`, open the control plane URL, expand **First time setup**, and enter your bootstrap token to create the owner account. For a production build, run `npm run build` then `npm run start -w @deplo/web`; the start script copies static assets into Next.js's standalone output and starts its server.
-4. Add a server and generate a pairing token. Follow [agent installation](docs/agent-installation.md) on the VPS.
+4. Add a server, run the setup command shown in **Servers** on the VPS, and paste a pairing token when prompted. See [agent installation](docs/agent-installation.md) for the manual path.
 5. Create a project, set a public OCI image such as `nginx:alpine` with port `80` and health path `/`, then deploy.
 
 For an HTTPS LAN setup between Mac and Linux Mint, follow [local development](docs/local-development.md). The agent deliberately refuses a non-local HTTP control-plane URL.

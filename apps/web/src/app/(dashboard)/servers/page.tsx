@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Plus, Server, RefreshCw, KeyRound, ShieldX } from "lucide-react";
 import { api, post } from "@/components/api";
 import { Button, Card, Input, Pill, SectionHead } from "@/components/ui";
@@ -32,11 +32,18 @@ type ServerInfo = {
 };
 const size = (n: number) => (n ? `${(n / 1073741824).toFixed(1)} GB` : "—");
 export default function ServersPage() {
+  const origin = useSyncExternalStore(
+    () => () => {},
+    () => window.location.origin,
+    () => "",
+  );
+  const installCommand = `curl -fsSLo /tmp/deplo-install.sh ${origin}/agent/install.sh && sudo bash /tmp/deplo-install.sh ${origin}`;
   const [servers, setServers] = useState<ServerInfo[]>([]);
   const [name, setName] = useState("");
   const [ip, setIp] = useState("");
   const [description, setDescription] = useState("");
   const [token, setToken] = useState("");
+  const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const load = useCallback(
@@ -108,6 +115,11 @@ export default function ServersPage() {
           {error}
         </p>
       )}
+      {message && (
+        <p role="status" className="mb-5 text-sm text-emerald-300">
+          {message}
+        </p>
+      )}
       {token && (
         <Card className="mb-6 border-emerald-500/30 p-5">
           <div className="flex items-center gap-2 font-semibold text-emerald-300">
@@ -131,6 +143,44 @@ export default function ServersPage() {
       )}
       <div className="grid gap-6 xl:grid-cols-[1fr_330px]">
         <div className="space-y-4">
+          {servers.length > 0 && (
+            <Card className="p-5">
+              <h2 className="font-semibold">Connect a VPS</h2>
+              <p className="mt-2 text-sm leading-6 text-slate-400">
+                Run one command on an Ubuntu 24.04 or Linux Mint 22.2 Cinnamon
+                server. The installer sets up missing Docker and Caddy packages,
+                verifies the agent binary, and creates its service. When it asks
+                for a token, click <strong>Pair token</strong> on your server
+                below and paste it into the terminal.
+              </p>
+              {origin.startsWith("https://") ? (
+                <>
+                  <pre className="mt-4 overflow-x-auto rounded-lg border border-white/10 bg-black/40 p-4 text-xs leading-5 text-emerald-200">
+                    {installCommand}
+                  </pre>
+                  <Button
+                    variant="secondary"
+                    className="mt-3"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(installCommand);
+                        setMessage("Install command copied");
+                      } catch {
+                        setError("Select and copy the command above");
+                      }
+                    }}
+                  >
+                    Copy command
+                  </Button>
+                </>
+              ) : (
+                <p className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-xs text-amber-200">
+                  Publish this control plane at a trusted HTTPS URL to connect a
+                  remote VPS. This local demo is for dashboard testing.
+                </p>
+              )}
+            </Card>
+          )}
           {servers.length === 0 ? (
             <Card className="p-12 text-center">
               <Server className="mx-auto text-slate-600" />
@@ -297,8 +347,8 @@ export default function ServersPage() {
             </Button>
           </form>
           <p className="mt-4 text-xs text-slate-600">
-            Next: generate a pairing token and install the agent using the guide
-            in docs/agent-installation.md.
+            Next: run the setup command on the VPS. Generate a pairing token
+            when the installer asks for it.
           </p>
         </Card>
       </div>

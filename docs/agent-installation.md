@@ -1,6 +1,23 @@
 # Agent installation
 
-Supported target: Ubuntu 24.04 LTS and Linux Mint on a compatible Ubuntu base, x86-64 or arm64. Install Docker Engine and Caddy from their official distribution instructions first. Verify `docker info` and `caddy version` before pairing. The agent uses the Docker Unix socket and Caddy CLI; the systemd service runs as root because both are host privileged in this MVP. This is explicit rather than presenting Docker group access as a safe sandbox.
+Supported target: Ubuntu 24.04 LTS and Linux Mint 22.2 Cinnamon on the Ubuntu 24.04 base, x86-64 or arm64. The agent uses the Docker Unix socket and Caddy CLI; its systemd service runs as root because both are host privileged in this MVP.
+
+## Guided setup
+
+First expose the control plane at a trusted HTTPS URL. Register a server in **Servers** and copy its setup command to a terminal on that VPS. The command downloads the installer from your own control plane and runs it with `sudo`. Review the downloaded script before running if you prefer. The installer:
+
+1. Downloads the matching Linux agent binary and verifies its published SHA256 checksum.
+2. Installs missing `docker.io` and `caddy` packages from the configured Ubuntu/Mint package repositories; it leaves existing installations in place.
+3. Adds one Deplo Caddy import without replacing unrelated Caddyfile entries, validates and reloads Caddy, and installs the agent as a restricted systemd service.
+4. Prompts for a pairing token **after** packages are ready. At that prompt, click **Pair token** in the dashboard and paste the token. It is not placed in shell history. After pairing, the installer removes the one-time token from the root-only environment file.
+
+Refresh **Servers** and check Online, Docker available, and Caddy ready. If setup fails, the installer prints the relevant service log. Keep HTTPS certificate validation enabled. The manual procedure below remains available for hosts with existing custom Docker/Caddy installations or for operators who want each step under their control.
+
+When releasing a new agent version, run `npm run agent:assets` in the repository before building the control plane. This rebuilds both Linux binaries and their `SHA256SUMS` file for the hosted installer.
+
+## Manual installation
+
+Install Docker Engine and Caddy from their official distribution instructions first. Verify `docker info` and `caddy version` before pairing. The root service identity is explicit rather than presenting Docker group access as a safe sandbox.
 
 ## Install a release
 

@@ -63,7 +63,9 @@ caddy version
 systemctl status docker caddy --no-pager
 ```
 
-Use a disposable Docker host or ensure the test will not disrupt other workloads. Install Docker Engine and Caddy using their official packages if absent. Check the existing `/etc/caddy/Caddyfile`; add `import /etc/caddy/deplo/*.caddy` **outside** site blocks, preserving every existing entry. Then run:
+Use a disposable Docker host or ensure the test will not disrupt other workloads. With the Mac control plane available over trusted HTTPS, register Mint in **Servers**, run the displayed setup command on Mint, then generate and paste the pairing token when prompted. The installer handles package checks, the Caddy import, binary verification, and systemd. The manual commands below are for troubleshooting or a custom installation.
+
+For a manual Caddy setup, install Docker Engine and Caddy using their official packages if absent. Check the existing `/etc/caddy/Caddyfile`; add `import /etc/caddy/deplo/*.caddy` **outside** site blocks, preserving every existing entry. Then run:
 
 ```sh
 sudo install -d -o root -g root -m 0755 /etc/caddy/deplo
@@ -84,9 +86,9 @@ Transfer that binary and its recorded checksum to Mint using your trusted file-t
 ## 4. Pair the agent
 
 1. Open `https://192.168.0.102` in the browser. In **First time setup**, use the bootstrap token and create the owner account; then sign in.
-2. In **Servers**, register `Mint test` with optional IP `192.168.0.106`. Click **Pair token**. The token appears once and expires after ten minutes.
-3. On Mint, create `/etc/deplo-agent/agent.env` and the systemd service exactly as shown in [agent installation](agent-installation.md). Set `DEPLO_URL=https://192.168.0.102` and enter the one-time token in the root-only environment file. Start the service.
-4. Check `sudo journalctl -u deplo-agent -n 50 --no-pager` for `paired` and `agent started`. Remove `DEPLO_PAIR_TOKEN` from the environment file, then restart the service.
+2. In **Servers**, register `Mint test` with optional IP `192.168.0.106`. Run the displayed setup command on Mint. When it asks for a token, click **Pair token**; the token appears once and expires after ten minutes.
+3. The installer creates `/etc/deplo-agent/agent.env`, installs the systemd service, pairs the agent, and removes the token from its environment file. If you use the manual path, follow [agent installation](agent-installation.md) instead.
+4. Check `sudo journalctl -u deplo-agent -n 50 --no-pager` for `paired` and `agent started`.
 5. Refresh **Servers**. Expected: **Online**, agent version and architecture, Docker available, Caddy ready, and nonempty host CPU/RAM/disk readings. Allow up to one heartbeat interval (two minutes). If Caddy says **not ready**, check its local admin API and import configuration.
 
 Do not paste the pairing token, database URL, encryption key, or identity file into a bug report.
