@@ -14,6 +14,8 @@ The **Connect a VPS** card displays one setup command. It installs only the Depl
 
 Copy the command to a terminal on the VPS and run it. The installer verifies the agent binary and asks for a pairing token. While it waits, click **Pair token** for that server in Deplo and paste the token into the VPS terminal. Refresh **Servers** until the server says **Online**. The token expires after ten minutes and is removed from the agent configuration after pairing.
 
+If pairing says **Invalid or expired pairing token**, click **Pair token** again, use **Copy token** to copy the newly displayed token, and rerun the same setup command on the VPS. The previous failed attempt leaves the agent stopped; you do not need to remove it first.
+
 Your Deplo URL must use a trusted HTTPS certificate that the VPS accepts. A local HTTP development server cannot connect a remote VPS.
 
 ## 3. Add software when you need it

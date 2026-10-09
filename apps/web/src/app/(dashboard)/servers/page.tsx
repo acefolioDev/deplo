@@ -82,6 +82,9 @@ export default function ServersPage() {
     }
   }
   async function pair(id: string) {
+    setToken("");
+    setMessage("");
+    setError("");
     try {
       const r = await post<{ token: string }>(`servers/${id}/pair`, {});
       setToken(r.token);
@@ -142,9 +145,23 @@ export default function ServersPage() {
           <code className="mt-4 block break-all rounded-lg bg-black/40 p-3 font-mono text-xs text-emerald-200">
             {token}
           </code>
+          <Button
+            variant="secondary"
+            className="mt-3"
+            onClick={async () => {
+              try {
+                await navigator.clipboard.writeText(token);
+                setMessage("Pairing token copied");
+              } catch {
+                setError("Select and copy the entire pairing token above");
+              }
+            }}
+          >
+            Copy token
+          </Button>
           <button
             onClick={() => setToken("")}
-            className="mt-3 text-xs text-slate-500 hover:text-white"
+            className="ml-3 mt-3 text-xs text-slate-500 hover:text-white"
           >
             Dismiss
           </button>

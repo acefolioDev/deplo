@@ -93,20 +93,28 @@ if ((root_terminal)); then
   sed -i '/^PrivateTmp=/d; /^ProtectSystem=/d; /^ProtectHome=/d; /^ReadWritePaths=/d; /^MemoryMax=/d; /^NoNewPrivileges=/d; /^RestrictAddressFamilies=/d' /etc/systemd/system/deplo-agent.service
 fi
 systemctl daemon-reload
+# Do not restart a rejected pairing token until it reaches the API rate limit.
+if [[ ! -s /var/lib/deplo-agent/identity.json ]]; then
+  sed -i 's/^Restart=on-failure$/Restart=no/' /etc/systemd/system/deplo-agent.service
+  systemctl daemon-reload
+fi
 systemctl enable --now deplo-agent || fail 'agent did not start; inspect journalctl -u deplo-agent'
 
 if grep -q '^DEPLO_PAIR_TOKEN=' "$envfile"; then
   for _ in {1..30}; do
     [[ -s /var/lib/deplo-agent/identity.json ]] && break
+    systemctl is-failed --quiet deplo-agent && break
     sleep 1
   done
   if [[ ! -s /var/lib/deplo-agent/identity.json ]]; then
     journalctl -u deplo-agent -n 20 --no-pager >&2 || true
     systemctl stop deplo-agent || true
     sed -i '/^DEPLO_PAIR_TOKEN=/d' "$envfile"
-    fail 'pairing did not finish; check the HTTPS URL, token, and agent journal'
+    fail 'pairing failed. Generate a new Pair token in Servers, copy the entire token, and rerun the setup command'
   fi
   sed -i '/^DEPLO_PAIR_TOKEN=/d' "$envfile"
+  sed -i 's/^Restart=no$/Restart=on-failure/' /etc/systemd/system/deplo-agent.service
+  systemctl daemon-reload
   systemctl restart deplo-agent
 fi
 say 'Agent is installed and paired. Docker and Caddy can be added later from the Deplo terminal.'
