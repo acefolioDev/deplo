@@ -43,7 +43,7 @@ Keep `ENCRYPTION_KEY` stable across redeployments. Losing it makes stored deploy
 
 After deployment, visit `https://YOUR-DEPLO-HOST/api/auth/me`. It should return JSON with `"user":null`. Open `/register`, create your account using the registration code, and sign in. Give trusted developers the Deplo URL and code. They can then follow the [user guide](USER_GUIDE.md) to pair a VPS.
 
-The server installer and its Linux agent binaries are served from the deployed site's `/agent/` path. Check that `https://YOUR-DEPLO-HOST/agent/install.sh` downloads before pairing a server. The managed VPS still needs Docker; Caddy is optional for its application domains.
+The server installer and its Linux agent binaries are served from the deployed site's `/agent/` path. Check that `https://YOUR-DEPLO-HOST/agent/install.sh` downloads before pairing a server. Pairing a VPS installs only the agent. Developers can later add Docker for container deployments and Caddy for public application domains from the Deplo terminal.
 
 ## Updates and backups
 

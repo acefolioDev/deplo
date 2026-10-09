@@ -5,7 +5,7 @@ export default function DocsPage() {
       <SectionHead
         eyebrow="Guide"
         title="Get started"
-        description="A short path from a fresh server to your first deployment."
+        description="Connect a server first, then add only the software you need."
       />
       <div className="grid gap-4 md:grid-cols-2">
         {[
@@ -16,18 +16,18 @@ export default function DocsPage() {
           ],
           [
             "02",
-            "Install and pair the agent",
-            "Run the setup command shown in Servers on Ubuntu 24.04 or compatible Linux Mint. It installs Docker and, if you choose public HTTPS domains, Caddy. It verifies the agent binary and prompts for a one-time pairing token.",
+            "Pair the agent",
+            "Run the setup command shown in Servers on Ubuntu 24.04 or Linux Mint 22.2. It installs the agent, enables the root terminal unless you opt out, verifies the binary, and asks for a one-time pairing token. Docker and Caddy are not installed.",
           ],
           [
             "03",
-            "Create a project",
-            "Choose the server, then configure production and staging image references, ports, and health paths.",
+            "Install what you need",
+            "Use the Deplo root terminal to add Docker when you want container deployments. Add Caddy only when you want public HTTPS domains. The server remains connected without either package.",
           ],
           [
             "04",
             "Deploy and inspect",
-            "Save settings, deploy an OCI image, inspect status and recent logs, and map a domain to reach it over HTTPS.",
+            "Create a project, deploy an OCI image, inspect status and logs, and optionally map a domain over HTTPS.",
           ],
         ].map(([number, title, body]) => (
           <Card key={number} className="p-6">
@@ -39,6 +39,27 @@ export default function DocsPage() {
           </Card>
         ))}
       </div>
+      <Card className="mt-6 p-6">
+        <h2 className="font-semibold">Optional software on your VPS</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-400">
+          Run these commands in Deplo’s root terminal only when you need the
+          feature. Docker runs container deployments:
+        </p>
+        <pre className="mt-3 overflow-x-auto rounded-lg bg-black/40 p-4 text-xs text-emerald-200">
+          {
+            "apt-get update && apt-get install -y docker.io && systemctl enable --now docker"
+          }
+        </pre>
+        <p className="mt-4 text-sm leading-6 text-slate-400">
+          For public HTTPS domains, install Caddy and let it load Deplo’s route
+          files:
+        </p>
+        <pre className="mt-3 overflow-x-auto rounded-lg bg-black/40 p-4 text-xs leading-5 text-emerald-200">
+          {
+            "apt-get update && apt-get install -y caddy\ninstall -d -m 0755 /etc/caddy/deplo\ngrep -Fxq 'import /etc/caddy/deplo/*.caddy' /etc/caddy/Caddyfile || printf '\\nimport /etc/caddy/deplo/*.caddy\\n' >> /etc/caddy/Caddyfile\ncaddy validate --config /etc/caddy/Caddyfile --adapter caddyfile\nsystemctl enable --now caddy && systemctl reload caddy"
+          }
+        </pre>
+      </Card>
       <Card className="mt-6 p-6">
         <h2 className="font-semibold">Guides</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">

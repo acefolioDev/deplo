@@ -306,14 +306,15 @@ export default function ServersPage() {
                       s.docker_available ? "text-emerald-300" : "text-slate-500"
                     }
                   >
-                    Docker {s.docker_available ? "available" : "unavailable"}
+                    Docker{" "}
+                    {s.docker_available ? "available" : "optional · not ready"}
                   </span>
                   <span
                     className={
                       s.caddy_available ? "text-emerald-300" : "text-slate-500"
                     }
                   >
-                    Caddy {s.caddy_available ? "ready" : "not ready"}
+                    Caddy {s.caddy_available ? "ready" : "optional · not ready"}
                   </span>
                   <span className="flex-1" />
                   {s.connected && s.terminal_available && (

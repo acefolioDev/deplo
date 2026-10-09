@@ -96,7 +96,11 @@ async function ownedEnvironment(id: string, userId: string) {
     project_name: environment.projects.name,
   };
 }
-async function requireDeploymentRuntime(serverId: string, environmentId: string) {
+async function requireDeploymentRuntime(
+  serverId: string,
+  environmentId: string,
+  checkDomains = true,
+) {
   const server = await prisma.servers.findUnique({
     where: { id: serverId },
     select: { docker_available: true, caddy_available: true },
@@ -106,9 +110,9 @@ async function requireDeploymentRuntime(serverId: string, environmentId: string)
       409,
       "Docker is not ready on this server. Install and start it from the Deplo root terminal before deploying.",
     );
-  const domains = await prisma.domains.count({
-    where: { environment_id: environmentId },
-  });
+  const domains = checkDomains
+    ? await prisma.domains.count({ where: { environment_id: environmentId } })
+    : 0;
   if (domains && !server.caddy_available)
     throw new HttpError(
       409,
@@ -1038,7 +1042,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
     ) {
       if (!env.active_deployment_id)
         throw new HttpError(409, "No active deployment");
-      await requireDeploymentRuntime(env.server_id, env.id);
+      await requireDeploymentRuntime(env.server_id, env.id, false);
       if (p[2] === "logs")
         await prisma.deployment_jobs.deleteMany({
           where: {

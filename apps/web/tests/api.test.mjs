@@ -369,6 +369,28 @@ if (!databaseURL) {
       agentCredential,
     );
     assert.equal(r.status, 200);
+    r = await call(
+      `environments/${envId}/domains`,
+      "POST",
+      { hostname: "app.example.com" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 201);
+    r = await call(`environments/${envId}/deploy`, "POST", {}, null, cookie);
+    assert.equal(
+      r.status,
+      409,
+      "Caddy must be optional until a domain is used",
+    );
+    assert.match(r.data.error, /Caddy is not ready/);
+    r = await call(
+      "agent/heartbeat",
+      "POST",
+      { ...heartbeat, dockerAvailable: true, caddyAvailable: true },
+      agentCredential,
+    );
+    assert.equal(r.status, 200);
     r = await call(`environments/${envId}/deploy`, "POST", {}, null, cookie);
     assert.equal(r.status, 201, JSON.stringify(r.data));
     const deploymentId = r.data.deployment.id;

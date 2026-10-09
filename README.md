@@ -12,7 +12,7 @@ The control plane is configured for Vercel and Neon. The production guide lists 
 ## Repository
 
 - `apps/web` — Next.js dashboard, API, and Prisma schema/migrations
-- `agent` — Go agent for Docker deployments and optional root terminal access
+- `agent` — Go agent for server connection and a root terminal; Docker deployments work after Docker is installed on the managed server
 - `scripts` — migration and agent asset build commands
 
 ## Development checks
