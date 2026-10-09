@@ -4,23 +4,24 @@ This guide is for the person hosting the Deplo control plane. Vercel runs the da
 
 ## 1. Create a Neon database
 
-Create a Neon project in a region near the Vercel Function region you will use. In Neon's **Connect** dialog, copy two PostgreSQL connection strings for the same database and branch:
-
-- **Pooled** connection (hostname contains `-pooler`): use as Deplo's `DATABASE_URL` on Vercel.
-- **Direct** connection (hostname does not contain `-pooler`): use as `DIRECT_URL` when applying Prisma migrations from your computer or CI.
-
-Keep both URLs private. The application uses the pooled URL because Vercel can start many Functions. Migrations use the direct URL.
+Create a Neon project in a region near the Vercel Function region you will use. In Neon's **Connect** dialog, copy the pooled PostgreSQL connection string (its hostname contains `-pooler`). Keep it private. Deplo uses this URL on Vercel, and current Neon pooling also supports Prisma migrations. You can use a separate direct connection string for migrations if you prefer.
 
 ## 2. Apply the database schema
 
-From the repository root on a computer with Node.js 22, install dependencies and set `DIRECT_URL` to the Neon direct connection string in your shell. Then run:
+From the repository root on a computer with Node.js 22, create a `.env` file with your Neon URL, then install dependencies and run the migration:
+
+```dotenv
+DATABASE_URL=postgresql://USER:PASSWORD@YOUR-POOLER-HOST/DATABASE?sslmode=require
+```
 
 ```sh
 npm ci
 npm run db:migrate
 ```
 
-The command applies the checked-in Prisma migrations. Run it again before each deployment that changes the schema. Do not run migrations as part of a Vercel build: a preview or retry could otherwise change the shared database. Keep the direct URL out of Git and Vercel's runtime settings.
+The command reads `.env` automatically and applies the checked-in Prisma migrations. An optional `DIRECT_URL` takes precedence if you want migrations to use Neon's direct connection; copy that URL from Neon with pooling disabled. Shell variables override `.env`. Run the command again before each deployment that changes the schema. Do not run migrations as part of a Vercel build: a preview or retry could otherwise change the shared database. Keep `.env` out of Git.
+
+For local testing, `npm run dev` also reads the repository root's `.env`. If it contains only `DIRECT_URL`, the dev command uses that URL as `DATABASE_URL` for the app. Vercel still needs `DATABASE_URL` set in its own environment settings.
 
 ## 3. Create the Vercel project
 
@@ -47,7 +48,7 @@ The server installer and its Linux agent binaries are served from the deployed s
 
 ## Updates and backups
 
-For a schema change, run `npm run db:migrate` with the Neon direct URL before promoting the matching application version. Deploy the application through Vercel. Back up Neon data using its backup/restore options or `pg_dump` against the direct connection. Keep the encryption key in a separate secure backup.
+For a schema change, run `npm run db:migrate` before promoting the matching application version. Deploy the application through Vercel. Back up Neon data using its backup/restore options or `pg_dump` against a direct connection. Keep the encryption key in a separate secure backup.
 
 Neon's free plan is useful for intermittent testing. A connected agent checks for jobs at least every 30 seconds, so it can prevent Neon's five-minute scale-to-zero and consume the free compute allowance even when no application deploys. Stop the agent between test sessions or plan for a paid database if you need it connected all month. Check actual usage in Neon and Vercel. Vercel Hobby is intended for personal, noncommercial use.
 

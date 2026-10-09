@@ -1,8 +1,14 @@
 import { spawnSync } from "node:child_process";
 import pg from "pg";
+import { loadLocalEnv } from "./load-local-env.mjs";
+
+loadLocalEnv();
 
 const migrationURL = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
-if (!migrationURL) throw new Error("DIRECT_URL or DATABASE_URL is required");
+if (!migrationURL)
+  throw new Error(
+    "Set DIRECT_URL or DATABASE_URL in the repository's .env file or your shell",
+  );
 const migrationEnv = { ...process.env, DATABASE_URL: migrationURL };
 
 function prisma(...args) {

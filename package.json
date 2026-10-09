@@ -5,7 +5,7 @@
     "apps/web"
   ],
   "scripts": {
-    "dev": "npm run dev -w @deplo/web",
+    "dev": "node scripts/dev.mjs",
     "agent:assets": "bash scripts/build-agent-assets.sh",
     "build": "npm run build -w @deplo/web",
     "typecheck": "npm run typecheck -w @deplo/web",
