@@ -8,7 +8,7 @@ import {
 } from "node:crypto";
 import { promisify } from "node:util";
 import { cookies, headers } from "next/headers";
-import { pool } from "./db";
+import { prisma } from "./db";
 
 const scrypt = promisify(scryptCallback);
 export const sha256 = (value: string) =>
@@ -58,27 +58,25 @@ export function decrypt(value: string) {
 export async function currentUser() {
   const token = (await cookies()).get("deplo_session")?.value;
   if (!token) return null;
-  const result = await pool.query<{ id: string; email: string }>(
-    `SELECT u.id,u.email FROM sessions s JOIN users u ON u.id=s.user_id
-     WHERE s.token_hash=$1 AND s.expires_at>now()`,
-    [sha256(token)],
-  );
-  return result.rows[0] ?? null;
+  const session = await prisma.sessions.findFirst({
+    where: { token_hash: sha256(token), expires_at: { gt: new Date() } },
+    select: { users: { select: { id: true, email: true } } },
+  });
+  return session?.users ?? null;
 }
 export async function agentIdentity(request: Request) {
   const bearer = request.headers
     .get("authorization")
     ?.match(/^Bearer ([A-Za-z0-9_-]{30,})$/)?.[1];
   if (!bearer) return null;
-  const result = await pool.query<{
-    id: string;
-    server_id: string;
-    pending: boolean;
-  }>(
-    "SELECT id,server_id,pending FROM agent_credentials WHERE token_hash=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>now())",
-    [sha256(bearer)],
-  );
-  return result.rows[0] ?? null;
+  return prisma.agent_credentials.findFirst({
+    where: {
+      token_hash: sha256(bearer),
+      revoked_at: null,
+      OR: [{ expires_at: null }, { expires_at: { gt: new Date() } }],
+    },
+    select: { id: true, server_id: true, pending: true },
+  });
 }
 export async function validOrigin(request: Request) {
   const origin = request.headers.get("origin");

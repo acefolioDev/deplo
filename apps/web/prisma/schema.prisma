@@ -1,0 +1,248 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model agent_credentials {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  server_id  String    @db.Uuid
+  token_hash String    @unique
+  revoked_at DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  pending    Boolean   @default(false)
+  expires_at DateTime? @db.Timestamptz(6)
+  servers    servers   @relation(fields: [server_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([server_id], map: "agent_credentials_server_idx")
+}
+
+model audit_logs {
+  id          BigInt   @id @default(autoincrement())
+  user_id     String?  @db.Uuid
+  server_id   String?  @db.Uuid
+  action      String
+  resource_id String?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  servers     servers? @relation(fields: [server_id], references: [id], onUpdate: NoAction)
+  users       users?   @relation(fields: [user_id], references: [id], onUpdate: NoAction)
+
+  @@index([user_id, created_at(sort: Desc)], map: "audit_logs_user_time_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model deployment_jobs {
+  id               String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  server_id        String       @db.Uuid
+  environment_id   String       @db.Uuid
+  deployment_id    String?      @db.Uuid
+  kind             String
+  payload          Json         @default("{}")
+  status           String       @default("pending")
+  attempt          Int          @default(0)
+  lease_hash       String?
+  lease_expires_at DateTime?    @db.Timestamptz(6)
+  result           Json?
+  error            String?
+  created_at       DateTime     @default(now()) @db.Timestamptz(6)
+  finished_at      DateTime?    @db.Timestamptz(6)
+  deployments      deployments? @relation(fields: [deployment_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  environments     environments @relation(fields: [environment_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  servers          servers      @relation(fields: [server_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([deployment_id, kind])
+  @@index([kind, finished_at], map: "deployment_jobs_log_retention")
+  @@index([server_id, status, created_at], map: "deployment_jobs_poll_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model deployments {
+  id                                                          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  environment_id                                              String            @db.Uuid
+  image_ref                                                   String
+  image_digest                                                String?
+  status                                                      String            @default("queued")
+  message                                                     String?
+  created_at                                                  DateTime          @default(now()) @db.Timestamptz(6)
+  started_at                                                  DateTime?         @db.Timestamptz(6)
+  finished_at                                                 DateTime?         @db.Timestamptz(6)
+  deployment_jobs                                             deployment_jobs[]
+  environments_deployments_environment_idToenvironments       environments      @relation("deployments_environment_idToenvironments", fields: [environment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  environments_environments_active_deployment_idTodeployments environments[]    @relation("environments_active_deployment_idTodeployments")
+
+  @@index([environment_id, created_at(sort: Desc)], map: "deployments_env_created_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model domains {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  environment_id String       @db.Uuid
+  hostname       String       @unique
+  status         String       @default("pending")
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  environments   environments @relation(fields: [environment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model environment_variables {
+  environment_id String       @db.Uuid
+  name           String
+  ciphertext     String
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  environments   environments @relation(fields: [environment_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([environment_id, name])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model environments {
+  id                                                         String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  project_id                                                 String                  @db.Uuid
+  name                                                       String
+  image_ref                                                  String?
+  container_port                                             Int                     @default(3000)
+  memory_mb                                                  Int                     @default(256)
+  cpu_quota                                                  Int                     @default(100000)
+  health_path                                                String                  @default("/health")
+  active_deployment_id                                       String?                 @db.Uuid
+  created_at                                                 DateTime                @default(now()) @db.Timestamptz(6)
+  volume_path                                                String?
+  registry_username                                          String?
+  registry_token_ciphertext                                  String?
+  runtime_status                                             String                  @default("stopped")
+  deployment_jobs                                            deployment_jobs[]
+  deployments_deployments_environment_idToenvironments       deployments[]           @relation("deployments_environment_idToenvironments")
+  domains                                                    domains[]
+  environment_variables                                      environment_variables[]
+  deployments_environments_active_deployment_idTodeployments deployments?            @relation("environments_active_deployment_idTodeployments", fields: [active_deployment_id], references: [id], onUpdate: NoAction, map: "environments_active_deployment_fk")
+  projects                                                   projects                @relation(fields: [project_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([project_id, name])
+}
+
+model login_attempts {
+  id          BigInt   @id @default(autoincrement())
+  key_hash    String
+  occurred_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([key_hash, occurred_at], map: "login_attempts_key_time_idx")
+}
+
+model pairing_tokens {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  server_id   String    @db.Uuid
+  token_hash  String    @unique
+  expires_at  DateTime  @db.Timestamptz(6)
+  consumed_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  servers     servers   @relation(fields: [server_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model projects {
+  id           String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String         @db.Uuid
+  server_id    String         @db.Uuid
+  name         String
+  created_at   DateTime       @default(now()) @db.Timestamptz(6)
+  environments environments[]
+  servers      servers        @relation(fields: [server_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users        users          @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([user_id, name])
+}
+
+model schema_migrations {
+  name       String   @id
+  applied_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model servers {
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String              @db.Uuid
+  name               String
+  ip                 String?
+  description        String?
+  status             String              @default("unpaired")
+  agent_version      String?
+  docker_available   Boolean             @default(false)
+  caddy_available    Boolean             @default(false)
+  metrics            Json?
+  last_seen_at       DateTime?           @db.Timestamptz(6)
+  created_at         DateTime            @default(now()) @db.Timestamptz(6)
+  architecture       String?
+  terminal_available Boolean             @default(false)
+  agent_credentials  agent_credentials[]
+  audit_logs         audit_logs[]
+  deployment_jobs    deployment_jobs[]
+  pairing_tokens     pairing_tokens[]
+  projects           projects[]
+  users              users               @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  terminal_sessions  terminal_sessions[]
+
+  @@unique([user_id, name])
+}
+
+model sessions {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  token_hash String   @unique
+  expires_at DateTime @db.Timestamptz(6)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id], map: "sessions_user_idx")
+}
+
+model terminal_inputs {
+  id                BigInt            @id @default(autoincrement())
+  session_id        String            @db.Uuid
+  data              String
+  terminal_sessions terminal_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([session_id, id], map: "terminal_inputs_session_id")
+}
+
+model terminal_outputs {
+  id                BigInt            @id @default(autoincrement())
+  session_id        String            @db.Uuid
+  data              String
+  terminal_sessions terminal_sessions @relation(fields: [session_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([session_id, id], map: "terminal_outputs_session_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model terminal_sessions {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  server_id        String             @db.Uuid
+  user_id          String             @db.Uuid
+  status           String             @default("pending")
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  expires_at       DateTime           @db.Timestamptz(6)
+  closed_at        DateTime?          @db.Timestamptz(6)
+  cols             Int                @default(80)
+  rows             Int                @default(24)
+  terminal_inputs  terminal_inputs[]
+  terminal_outputs terminal_outputs[]
+  servers          servers            @relation(fields: [server_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users            users              @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([expires_at], map: "terminal_session_expiry")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id                String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email             String              @unique
+  password_hash     String
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  audit_logs        audit_logs[]
+  projects          projects[]
+  servers           servers[]
+  sessions          sessions[]
+  terminal_sessions terminal_sessions[]
+}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { pool, transaction } from "@/lib/db";
+import { pool, prisma, transaction } from "@/lib/db";
 import {
   agentIdentity,
   cookieSettings,
@@ -68,35 +68,44 @@ async function audit(
   action: string,
   resourceId: string | null,
 ) {
-  await pool.query(
-    "INSERT INTO audit_logs(user_id,server_id,action,resource_id) VALUES($1,$2,$3,$4)",
-    [userId, serverId, action, resourceId],
-  );
+  await prisma.audit_logs.create({
+    data: {
+      user_id: userId,
+      server_id: serverId,
+      action,
+      resource_id: resourceId,
+    },
+  });
 }
 async function ownedServer(id: string, userId: string) {
-  const r = await pool.query(
-    "SELECT * FROM servers WHERE id=$1 AND user_id=$2",
-    [id, userId],
-  );
-  if (!r.rowCount) throw new HttpError(404, "Server not found");
-  return r.rows[0];
+  const server = await prisma.servers.findFirst({
+    where: { id, user_id: userId },
+  });
+  if (!server) throw new HttpError(404, "Server not found");
+  return server;
 }
 async function ownedEnvironment(id: string, userId: string) {
-  const r = await pool.query(
-    `SELECT e.*,p.server_id,p.name AS project_name FROM environments e JOIN projects p ON p.id=e.project_id WHERE e.id=$1 AND p.user_id=$2`,
-    [id, userId],
-  );
-  if (!r.rowCount) throw new HttpError(404, "Environment not found");
-  return r.rows[0];
+  const environment = await prisma.environments.findFirst({
+    where: { id, projects: { user_id: userId } },
+    include: { projects: { select: { server_id: true, name: true } } },
+  });
+  if (!environment) throw new HttpError(404, "Environment not found");
+  return {
+    ...environment,
+    server_id: environment.projects.server_id,
+    project_name: environment.projects.name,
+  };
 }
 async function rateLimit(key: string, maximum: number) {
   const hash = sha256(key);
-  const r = await pool.query(
-    "SELECT count(*)::int AS count FROM login_attempts WHERE key_hash=$1 AND occurred_at>now()-interval '15 minutes'",
-    [hash],
-  );
-  if (r.rows[0].count >= maximum) throw new HttpError(429, "Too many attempts");
-  await pool.query("INSERT INTO login_attempts(key_hash) VALUES($1)", [hash]);
+  const count = await prisma.login_attempts.count({
+    where: {
+      key_hash: hash,
+      occurred_at: { gt: new Date(Date.now() - 15 * 60 * 1000) },
+    },
+  });
+  if (count >= maximum) throw new HttpError(429, "Too many attempts");
+  await prisma.login_attempts.create({ data: { key_hash: hash } });
 }
 function terminalData(value: unknown, maxBytes: number) {
   if (
@@ -113,14 +122,20 @@ function terminalData(value: unknown, maxBytes: number) {
   return value;
 }
 async function expireTerminals() {
-  const expired = await pool.query(
-    "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE status<>'closed' AND expires_at<=now() RETURNING id,user_id,server_id",
-  );
-  for (const x of expired.rows)
+  const now = new Date();
+  const expired = await prisma.terminal_sessions.updateManyAndReturn({
+    where: { status: { not: "closed" }, expires_at: { lte: now } },
+    data: { status: "closed", closed_at: now },
+    select: { id: true, user_id: true, server_id: true },
+  });
+  for (const x of expired)
     await audit(x.user_id, x.server_id, "root_terminal.expire", x.id);
-  await pool.query(
-    "DELETE FROM terminal_sessions WHERE status='closed' AND closed_at<now()-interval '1 day'",
-  );
+  await prisma.terminal_sessions.deleteMany({
+    where: {
+      status: "closed",
+      closed_at: { lt: new Date(now.getTime() - 24 * 60 * 60 * 1000) },
+    },
+  });
 }
 
 async function handle(request: NextRequest, path: string[], method: string) {
@@ -132,7 +147,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
   if (p[0] === "auth") {
     if (p[1] === "me" && method === "GET")
       return json({ user: await currentUser() });
-    if (p[1] === "bootstrap" && method === "POST") {
+    if (p[1] === "register" && method === "POST") {
       const b = await body(request);
       const email = str(b.email, "email", 254).toLowerCase();
       const password = str(b.password, "password", 256);
@@ -141,26 +156,31 @@ async function handle(request: NextRequest, path: string[], method: string) {
           400,
           "Use a valid email and a password of at least 12 characters",
         );
-      const bootstrapToken = str(b.bootstrapToken, "bootstrap token");
-      await rateLimit(`bootstrap:${sha256(bootstrapToken)}`, 5);
-      if (
-        !process.env.BOOTSTRAP_TOKEN ||
-        !safeEqual(bootstrapToken, process.env.BOOTSTRAP_TOKEN)
-      )
-        throw new HttpError(403, "Invalid bootstrap token");
+      await rateLimit(`register:${email}`, 5);
+      if (process.env.REGISTRATION_CODE) {
+        const code =
+          typeof b.registrationCode === "string" ? b.registrationCode : "";
+        if (!safeEqual(code, process.env.REGISTRATION_CODE))
+          throw new HttpError(403, "Invalid registration code");
+      }
       const passwordHash = await hashPassword(password);
-      const user = await transaction(async (c) => {
-        await c.query("SELECT pg_advisory_xact_lock(821614)");
-        const count = await c.query("SELECT 1 FROM users LIMIT 1");
-        if (count.rowCount) throw new HttpError(409, "Owner already exists");
-        return (
-          await c.query(
-            "INSERT INTO users(email,password_hash) VALUES($1,$2) RETURNING id,email",
-            [email, passwordHash],
-          )
-        ).rows[0];
+      const token = secret();
+      const user = await prisma.$transaction(async (db) => {
+        const created = await db.users.create({
+          data: { email, password_hash: passwordHash },
+          select: { id: true, email: true },
+        });
+        await db.sessions.create({
+          data: {
+            user_id: created.id,
+            token_hash: sha256(token),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+          },
+        });
+        return created;
       });
-      await audit(user.id, null, "owner.bootstrap", user.id);
+      await audit(user.id, null, "account.register", user.id);
+      (await cookies()).set("deplo_session", token, cookieSettings());
       return json({ user }, 201);
     }
     if (p[1] === "login" && method === "POST") {
@@ -168,29 +188,29 @@ async function handle(request: NextRequest, path: string[], method: string) {
       const email = str(b.email, "email", 254).toLowerCase();
       const password = str(b.password, "password", 256);
       await rateLimit(`login:${email}`, 10);
-      const r = await pool.query(
-        "SELECT id,email,password_hash FROM users WHERE email=$1",
-        [email],
-      );
-      if (
-        !r.rowCount ||
-        !(await verifyPassword(password, r.rows[0].password_hash))
-      )
+      const account = await prisma.users.findUnique({
+        where: { email },
+        select: { id: true, email: true, password_hash: true },
+      });
+      if (!account || !(await verifyPassword(password, account.password_hash)))
         throw new HttpError(401, "Invalid credentials");
       const token = secret();
-      await pool.query(
-        "INSERT INTO sessions(user_id,token_hash,expires_at) VALUES($1,$2,now()+interval '7 days')",
-        [r.rows[0].id, sha256(token)],
-      );
+      await prisma.sessions.create({
+        data: {
+          user_id: account.id,
+          token_hash: sha256(token),
+          expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        },
+      });
       (await cookies()).set("deplo_session", token, cookieSettings());
-      return json({ user: { id: r.rows[0].id, email } });
+      return json({ user: { id: account.id, email } });
     }
     if (p[1] === "logout" && method === "POST") {
       const token = (await cookies()).get("deplo_session")?.value;
       if (token)
-        await pool.query("DELETE FROM sessions WHERE token_hash=$1", [
-          sha256(token),
-        ]);
+        await prisma.sessions.deleteMany({
+          where: { token_hash: sha256(token) },
+        });
       (await cookies()).delete("deplo_session");
       return json({ ok: true });
     }
@@ -259,24 +279,28 @@ async function handle(request: NextRequest, path: string[], method: string) {
         diskTotal: number(metrics.diskTotal),
         containers,
       };
-      await pool.query(
-        `UPDATE servers SET status='online',last_seen_at=now(),agent_version=$2,docker_available=$3,caddy_available=$4,metrics=$5,architecture=$6,terminal_available=$7 WHERE id=$1`,
-        [
-          agent.server_id,
-          str(b.version, "version", 64),
-          b.dockerAvailable === true,
-          b.caddyAvailable === true,
-          JSON.stringify(validated),
-          b.architecture ? str(b.architecture, "architecture", 32) : null,
-          b.terminalAvailable === true,
-        ],
-      );
+      await prisma.servers.update({
+        where: { id: agent.server_id },
+        data: {
+          status: "online",
+          last_seen_at: new Date(),
+          agent_version: str(b.version, "version", 64),
+          docker_available: b.dockerAvailable === true,
+          caddy_available: b.caddyAvailable === true,
+          metrics: validated,
+          architecture: b.architecture
+            ? str(b.architecture, "architecture", 32)
+            : null,
+          terminal_available: b.terminalAvailable === true,
+        },
+      });
       if (b.terminalAvailable !== true) {
-        const closed = await pool.query(
-          "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE server_id=$1 AND status<>'closed' RETURNING id,user_id",
-          [agent.server_id],
-        );
-        for (const x of closed.rows)
+        const closed = await prisma.terminal_sessions.updateManyAndReturn({
+          where: { server_id: agent.server_id, status: { not: "closed" } },
+          data: { status: "closed", closed_at: new Date() },
+          select: { id: true, user_id: true },
+        });
+        for (const x of closed)
           await audit(
             x.user_id,
             agent.server_id,
@@ -353,10 +377,13 @@ async function handle(request: NextRequest, path: string[], method: string) {
     }
     if (p[1] === "rotate" && method === "POST") {
       const credential = secret();
-      await pool.query(
-        "INSERT INTO agent_credentials(server_id,token_hash,pending) VALUES($1,$2,true)",
-        [agent.server_id, sha256(credential)],
-      );
+      await prisma.agent_credentials.create({
+        data: {
+          server_id: agent.server_id,
+          token_hash: sha256(credential),
+          pending: true,
+        },
+      });
       await audit(null, agent.server_id, "agent.rotate", agent.id);
       return json({ credential });
     }
@@ -410,22 +437,19 @@ async function handle(request: NextRequest, path: string[], method: string) {
         return j;
       });
       if (!job) return json({ job: null });
-      const env = await pool.query(
-        `SELECT e.*,p.name AS project_name FROM environments e JOIN projects p ON p.id=e.project_id WHERE e.id=$1`,
-        [job.environment_id],
-      );
-      const vars = await pool.query(
-        "SELECT name,ciphertext FROM environment_variables WHERE environment_id=$1",
-        [job.environment_id],
-      );
-      const domains = await pool.query(
-        "SELECT hostname FROM domains WHERE environment_id=$1",
-        [job.environment_id],
-      );
-      const previous = await pool.query(
-        "SELECT id FROM deployments WHERE id=$1",
-        [env.rows[0].active_deployment_id],
-      );
+      const [env, vars, domains] = await Promise.all([
+        prisma.environments.findUniqueOrThrow({
+          where: { id: job.environment_id },
+        }),
+        prisma.environment_variables.findMany({
+          where: { environment_id: job.environment_id },
+          select: { name: true, ciphertext: true },
+        }),
+        prisma.domains.findMany({
+          where: { environment_id: job.environment_id },
+          select: { hostname: true },
+        }),
+      ]);
       return json({
         job: {
           id: job.id,
@@ -433,21 +457,21 @@ async function handle(request: NextRequest, path: string[], method: string) {
           deploymentId: job.deployment_id,
           lease,
           environmentId: job.environment_id,
-          imageRef: job.payload.imageRef ?? env.rows[0].image_ref,
-          port: env.rows[0].container_port,
-          memoryMb: env.rows[0].memory_mb,
-          cpuQuota: env.rows[0].cpu_quota,
-          healthPath: env.rows[0].health_path,
-          volumePath: env.rows[0].volume_path,
-          registryUsername: env.rows[0].registry_username,
-          registryToken: env.rows[0].registry_token_ciphertext
-            ? decrypt(env.rows[0].registry_token_ciphertext)
+          imageRef: job.payload.imageRef ?? env.image_ref,
+          port: env.container_port,
+          memoryMb: env.memory_mb,
+          cpuQuota: env.cpu_quota,
+          healthPath: env.health_path,
+          volumePath: env.volume_path,
+          registryUsername: env.registry_username,
+          registryToken: env.registry_token_ciphertext
+            ? decrypt(env.registry_token_ciphertext)
             : null,
-          previousDeploymentId: previous.rows[0]?.id ?? null,
+          previousDeploymentId: env.active_deployment_id,
           variables: Object.fromEntries(
-            vars.rows.map((v) => [v.name, decrypt(v.ciphertext)]),
+            vars.map((v) => [v.name, decrypt(v.ciphertext)]),
           ),
-          domains: domains.rows.map((d) => d.hostname),
+          domains: domains.map((d) => d.hostname),
         },
       });
     }
@@ -529,47 +553,89 @@ async function handle(request: NextRequest, path: string[], method: string) {
   const user = await requiredUser();
   if (p[0] === "overview" && method === "GET") {
     const [servers, apps, deployments] = await Promise.all([
-      pool.query("SELECT count(*)::int AS n FROM servers WHERE user_id=$1", [
-        user.id,
-      ]),
-      pool.query(
-        `SELECT count(*)::int AS n FROM environments e JOIN projects p ON p.id=e.project_id WHERE p.user_id=$1 AND e.runtime_status='running'`,
-        [user.id],
-      ),
-      pool.query(
-        `SELECT d.id,d.status,d.image_ref,d.created_at,p.name AS project,e.name AS environment FROM deployments d JOIN environments e ON e.id=d.environment_id JOIN projects p ON p.id=e.project_id WHERE p.user_id=$1 ORDER BY d.created_at DESC LIMIT 8`,
-        [user.id],
-      ),
+      prisma.servers.count({ where: { user_id: user.id } }),
+      prisma.environments.count({
+        where: { runtime_status: "running", projects: { user_id: user.id } },
+      }),
+      prisma.deployments.findMany({
+        where: {
+          environments_deployments_environment_idToenvironments: {
+            projects: { user_id: user.id },
+          },
+        },
+        orderBy: { created_at: "desc" },
+        take: 8,
+        select: {
+          id: true,
+          status: true,
+          image_ref: true,
+          created_at: true,
+          environments_deployments_environment_idToenvironments: {
+            select: { name: true, projects: { select: { name: true } } },
+          },
+        },
+      }),
     ]);
     return json({
-      servers: servers.rows[0].n,
-      applications: apps.rows[0].n,
-      recentDeployments: deployments.rows,
+      servers,
+      applications: apps,
+      recentDeployments: deployments.map((d) => ({
+        id: d.id,
+        status: d.status,
+        image_ref: d.image_ref,
+        created_at: d.created_at,
+        project:
+          d.environments_deployments_environment_idToenvironments.projects.name,
+        environment:
+          d.environments_deployments_environment_idToenvironments.name,
+      })),
     });
   }
   if (p[0] === "servers") {
     if (p.length === 1 && method === "GET") {
-      const r = await pool.query(
-        `SELECT id,name,ip,description,status,agent_version,architecture,docker_available,caddy_available,terminal_available,metrics,last_seen_at,created_at,
-        (last_seen_at>now()-interval '3 minutes' AND status='online') AS connected FROM servers WHERE user_id=$1 ORDER BY created_at DESC`,
-        [user.id],
-      );
-      return json({ servers: r.rows });
+      const servers = await prisma.servers.findMany({
+        where: { user_id: user.id },
+        orderBy: { created_at: "desc" },
+        select: {
+          id: true,
+          name: true,
+          ip: true,
+          description: true,
+          status: true,
+          agent_version: true,
+          architecture: true,
+          docker_available: true,
+          caddy_available: true,
+          terminal_available: true,
+          metrics: true,
+          last_seen_at: true,
+          created_at: true,
+        },
+      });
+      return json({
+        servers: servers.map((server) => ({
+          ...server,
+          connected:
+            server.status === "online" &&
+            !!server.last_seen_at &&
+            server.last_seen_at.getTime() > Date.now() - 180000,
+        })),
+      });
     }
     if (p.length === 1 && method === "POST") {
       const b = await body(request);
       const name = str(b.name, "name", 80);
-      const r = await pool.query(
-        "INSERT INTO servers(user_id,name,ip,description) VALUES($1,$2,$3,$4) RETURNING id,name,status",
-        [
-          user.id,
+      const server = await prisma.servers.create({
+        data: {
+          user_id: user.id,
           name,
-          optional(b.ip, "IP address", 64),
-          optional(b.description, "description", 500),
-        ],
-      );
-      await audit(user.id, r.rows[0].id, "server.create", r.rows[0].id);
-      return json({ server: r.rows[0] }, 201);
+          ip: optional(b.ip, "IP address", 64),
+          description: optional(b.description, "description", 500),
+        },
+        select: { id: true, name: true, status: true },
+      });
+      await audit(user.id, server.id, "server.create", server.id);
+      return json({ server }, 201);
     }
     if (p[1]) {
       const server = await ownedServer(uuid(p[1]), user.id);
@@ -589,49 +655,50 @@ async function handle(request: NextRequest, path: string[], method: string) {
           const b = await body(request);
           await rateLimit(`terminal:${user.id}`, 5);
           const password = str(b.password, "password", 256);
-          const owner = await pool.query(
-            "SELECT password_hash FROM users WHERE id=$1",
-            [user.id],
-          );
-          if (
-            !owner.rowCount ||
-            !(await verifyPassword(password, owner.rows[0].password_hash))
-          )
+          const owner = await prisma.users.findUnique({
+            where: { id: user.id },
+            select: { password_hash: true },
+          });
+          if (!owner || !(await verifyPassword(password, owner.password_hash)))
             throw new HttpError(401, "Incorrect password");
-          const r = await pool.query(
-            "INSERT INTO terminal_sessions(server_id,user_id,expires_at) VALUES($1,$2,now()+interval '10 minutes') RETURNING id,expires_at",
-            [server.id, user.id],
-          );
-          await audit(user.id, server.id, "root_terminal.open", r.rows[0].id);
+          const session = await prisma.terminal_sessions.create({
+            data: {
+              server_id: server.id,
+              user_id: user.id,
+              expires_at: new Date(Date.now() + 10 * 60 * 1000),
+            },
+            select: { id: true, expires_at: true },
+          });
+          await audit(user.id, server.id, "root_terminal.open", session.id);
           return json(
-            { sessionId: r.rows[0].id, expiresAt: r.rows[0].expires_at },
+            { sessionId: session.id, expiresAt: session.expires_at },
             201,
           );
         }
         if (p[3]) {
           const sessionId = uuid(p[3]);
-          const r = await pool.query(
-            "SELECT id,status,expires_at FROM terminal_sessions WHERE id=$1 AND server_id=$2 AND user_id=$3",
-            [sessionId, server.id, user.id],
-          );
-          if (!r.rowCount)
-            throw new HttpError(404, "Terminal session not found");
-          const session = r.rows[0];
+          const session = await prisma.terminal_sessions.findFirst({
+            where: { id: sessionId, server_id: server.id, user_id: user.id },
+            select: { id: true, status: true, expires_at: true },
+          });
+          if (!session) throw new HttpError(404, "Terminal session not found");
           if (p.length === 4 && method === "GET") {
             const after = Number(
               new URL(request.url).searchParams.get("after") ?? "0",
             );
             if (!Number.isSafeInteger(after) || after < 0)
               throw new HttpError(400, "Invalid output cursor");
-            const output = await pool.query(
-              "SELECT id,data FROM terminal_outputs WHERE session_id=$1 AND id>$2 ORDER BY id LIMIT 50",
-              [sessionId, after],
-            );
+            const output = await prisma.terminal_outputs.findMany({
+              where: { session_id: sessionId, id: { gt: BigInt(after) } },
+              orderBy: { id: "asc" },
+              take: 50,
+              select: { id: true, data: true },
+            });
             return json({
               status: session.status,
               expiresAt: session.expires_at,
-              output: output.rows.map((x) => ({
-                id: x.id,
+              output: output.map((x) => ({
+                id: x.id.toString(),
                 data: decrypt(x.data),
               })),
             });
@@ -672,24 +739,28 @@ async function handle(request: NextRequest, path: string[], method: string) {
               rows > 100
             )
               throw new HttpError(400, "Invalid terminal size");
-            const resized = await pool.query(
-              "UPDATE terminal_sessions SET cols=$2,rows=$3 WHERE id=$1 AND status IN ('pending','active') AND expires_at>now() RETURNING id",
-              [sessionId, cols, rows],
-            );
-            if (!resized.rowCount)
+            const resized = await prisma.terminal_sessions.updateMany({
+              where: {
+                id: sessionId,
+                status: { in: ["pending", "active"] },
+                expires_at: { gt: new Date() },
+              },
+              data: { cols, rows },
+            });
+            if (!resized.count)
               throw new HttpError(409, "Terminal session closed");
             return json({ ok: true });
           }
           if (p[4] === "close" && method === "POST") {
-            const closed = await transaction(async (c) => {
-              const changed = await c.query(
-                "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1 AND status<>'closed' RETURNING id",
-                [sessionId],
-              );
-              await c.query("DELETE FROM terminal_inputs WHERE session_id=$1", [
-                sessionId,
-              ]);
-              return changed.rowCount;
+            const closed = await prisma.$transaction(async (db) => {
+              const changed = await db.terminal_sessions.updateMany({
+                where: { id: sessionId, status: { not: "closed" } },
+                data: { status: "closed", closed_at: new Date() },
+              });
+              await db.terminal_inputs.deleteMany({
+                where: { session_id: sessionId },
+              });
+              return changed.count;
             });
             if (closed)
               await audit(user.id, server.id, "root_terminal.close", sessionId);
@@ -699,28 +770,32 @@ async function handle(request: NextRequest, path: string[], method: string) {
       }
       if (p[2] === "pair" && method === "POST") {
         const token = secret();
-        await pool.query(
-          "INSERT INTO pairing_tokens(server_id,token_hash,expires_at) VALUES($1,$2,now()+interval '10 minutes')",
-          [server.id, sha256(token)],
-        );
+        await prisma.pairing_tokens.create({
+          data: {
+            server_id: server.id,
+            token_hash: sha256(token),
+            expires_at: new Date(Date.now() + 10 * 60 * 1000),
+          },
+        });
         await audit(user.id, server.id, "server.pair_token", server.id);
         return json({ token, expiresInSeconds: 600 });
       }
       if (p[2] === "revoke" && method === "POST") {
-        const closed = await transaction(async (c) => {
-          await c.query(
-            "UPDATE agent_credentials SET revoked_at=now() WHERE server_id=$1",
-            [server.id],
-          );
-          await c.query("UPDATE servers SET status='revoked' WHERE id=$1", [
-            server.id,
-          ]);
-          return (
-            await c.query(
-              "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE server_id=$1 AND status<>'closed' RETURNING id",
-              [server.id],
-            )
-          ).rows;
+        const closed = await prisma.$transaction(async (db) => {
+          const now = new Date();
+          await db.agent_credentials.updateMany({
+            where: { server_id: server.id },
+            data: { revoked_at: now },
+          });
+          await db.servers.update({
+            where: { id: server.id },
+            data: { status: "revoked" },
+          });
+          return db.terminal_sessions.updateManyAndReturn({
+            where: { server_id: server.id, status: { not: "closed" } },
+            data: { status: "closed", closed_at: now },
+            select: { id: true },
+          });
         });
         for (const x of closed)
           await audit(user.id, server.id, "root_terminal.revoked", x.id);
@@ -731,28 +806,52 @@ async function handle(request: NextRequest, path: string[], method: string) {
   }
   if (p[0] === "projects") {
     if (p.length === 1 && method === "GET") {
-      const r = await pool.query(
-        `SELECT p.id,p.name,p.server_id,p.created_at,s.name AS server_name,
-        coalesce(json_agg(json_build_object('id',e.id,'name',e.name,'imageRef',e.image_ref,'port',e.container_port,'healthPath',e.health_path,'volumePath',e.volume_path,'registryUsername',e.registry_username,'hasRegistryToken',e.registry_token_ciphertext IS NOT NULL,'activeDeploymentId',e.active_deployment_id,'runtimeStatus',e.runtime_status)) FILTER (WHERE e.id IS NOT NULL),'[]') AS environments
-        FROM projects p JOIN servers s ON s.id=p.server_id LEFT JOIN environments e ON e.project_id=p.id WHERE p.user_id=$1 GROUP BY p.id,s.name ORDER BY p.created_at DESC`,
-        [user.id],
-      );
-      return json({ projects: r.rows });
+      const projects = await prisma.projects.findMany({
+        where: { user_id: user.id },
+        orderBy: { created_at: "desc" },
+        include: { servers: { select: { name: true } }, environments: true },
+      });
+      return json({
+        projects: projects.map((project) => ({
+          id: project.id,
+          name: project.name,
+          server_id: project.server_id,
+          created_at: project.created_at,
+          server_name: project.servers.name,
+          environments: project.environments.map((env) => ({
+            id: env.id,
+            name: env.name,
+            imageRef: env.image_ref,
+            port: env.container_port,
+            healthPath: env.health_path,
+            volumePath: env.volume_path,
+            registryUsername: env.registry_username,
+            hasRegistryToken: env.registry_token_ciphertext !== null,
+            activeDeploymentId: env.active_deployment_id,
+            runtimeStatus: env.runtime_status,
+          })),
+        })),
+      });
     }
     if (p.length === 1 && method === "POST") {
       const b = await body(request);
       const server = await ownedServer(uuid(b.serverId), user.id);
-      const project = await transaction(async (c) => {
-        const r = await c.query(
-          "INSERT INTO projects(user_id,server_id,name) VALUES($1,$2,$3) RETURNING id,name",
-          [user.id, server.id, str(b.name, "name", 80)],
-        );
-        for (const name of ["production", "staging"])
-          await c.query(
-            "INSERT INTO environments(project_id,name) VALUES($1,$2)",
-            [r.rows[0].id, name],
-          );
-        return r.rows[0];
+      const project = await prisma.$transaction(async (db) => {
+        const created = await db.projects.create({
+          data: {
+            user_id: user.id,
+            server_id: server.id,
+            name: str(b.name, "name", 80),
+          },
+          select: { id: true, name: true },
+        });
+        await db.environments.createMany({
+          data: [
+            { project_id: created.id, name: "production" },
+            { project_id: created.id, name: "staging" },
+          ],
+        });
+        return created;
       });
       await audit(user.id, server.id, "project.create", project.id);
       return json({ project }, 201);
@@ -803,30 +902,30 @@ async function handle(request: NextRequest, path: string[], method: string) {
         (registryToken && (!registryUsername || !image?.startsWith("ghcr.io/")))
       )
         throw new HttpError(400, "Invalid deployment settings");
-      await pool.query(
-        "UPDATE environments SET image_ref=$2,container_port=$3,memory_mb=$4,cpu_quota=$5,health_path=$6,volume_path=$7,registry_username=$8,registry_token_ciphertext=$9 WHERE id=$1",
-        [
-          env.id,
-          image,
-          port,
-          memory,
-          cpu,
-          health,
-          volume,
-          registryUsername,
-          registryToken,
-        ],
-      );
+      await prisma.environments.update({
+        where: { id: env.id },
+        data: {
+          image_ref: image,
+          container_port: port,
+          memory_mb: memory,
+          cpu_quota: cpu,
+          health_path: health,
+          volume_path: volume,
+          registry_username: registryUsername,
+          registry_token_ciphertext: registryToken,
+        },
+      });
       await audit(user.id, env.server_id, "environment.update", env.id);
       return json({ ok: true });
     }
     if (p[2] === "variables") {
       if (method === "GET") {
-        const r = await pool.query(
-          "SELECT name,created_at FROM environment_variables WHERE environment_id=$1 ORDER BY name",
-          [env.id],
-        );
-        return json({ variables: r.rows });
+        const variables = await prisma.environment_variables.findMany({
+          where: { environment_id: env.id },
+          orderBy: { name: "asc" },
+          select: { name: true, created_at: true },
+        });
+        return json({ variables });
       }
       if (method === "POST") {
         const b = await body(request);
@@ -836,10 +935,12 @@ async function handle(request: NextRequest, path: string[], method: string) {
         const value = b.value;
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name))
           throw new HttpError(400, "Invalid variable name");
-        await pool.query(
-          "INSERT INTO environment_variables(environment_id,name,ciphertext) VALUES($1,$2,$3) ON CONFLICT(environment_id,name) DO UPDATE SET ciphertext=excluded.ciphertext",
-          [env.id, name, encrypt(value)],
-        );
+        const ciphertext = encrypt(value);
+        await prisma.environment_variables.upsert({
+          where: { environment_id_name: { environment_id: env.id, name } },
+          create: { environment_id: env.id, name, ciphertext },
+          update: { ciphertext },
+        });
         await audit(
           user.id,
           env.server_id,
@@ -849,10 +950,9 @@ async function handle(request: NextRequest, path: string[], method: string) {
         return json({ ok: true });
       }
       if (method === "DELETE" && p[3]) {
-        await pool.query(
-          "DELETE FROM environment_variables WHERE environment_id=$1 AND name=$2",
-          [env.id, p[3]],
-        );
+        await prisma.environment_variables.deleteMany({
+          where: { environment_id: env.id, name: p[3] },
+        });
         await audit(
           user.id,
           env.server_id,
@@ -864,27 +964,27 @@ async function handle(request: NextRequest, path: string[], method: string) {
     }
     if (p[2] === "domains") {
       if (method === "GET") {
-        const r = await pool.query(
-          "SELECT id,hostname,status FROM domains WHERE environment_id=$1 ORDER BY hostname",
-          [env.id],
-        );
-        return json({ domains: r.rows });
+        const domains = await prisma.domains.findMany({
+          where: { environment_id: env.id },
+          orderBy: { hostname: "asc" },
+          select: { id: true, hostname: true, status: true },
+        });
+        return json({ domains });
       }
       if (method === "POST") {
         const b = await body(request);
         const host = hostname(b.hostname);
-        const r = await pool.query(
-          "INSERT INTO domains(environment_id,hostname) VALUES($1,$2) RETURNING id,hostname,status",
-          [env.id, host],
-        );
-        await audit(user.id, env.server_id, "domain.add", r.rows[0].id);
-        return json({ domain: r.rows[0] }, 201);
+        const domain = await prisma.domains.create({
+          data: { environment_id: env.id, hostname: host },
+          select: { id: true, hostname: true, status: true },
+        });
+        await audit(user.id, env.server_id, "domain.add", domain.id);
+        return json({ domain }, 201);
       }
       if (method === "DELETE" && p[3]) {
-        await pool.query(
-          "DELETE FROM domains WHERE id=$1 AND environment_id=$2",
-          [uuid(p[3]), env.id],
-        );
+        await prisma.domains.deleteMany({
+          where: { id: uuid(p[3]), environment_id: env.id },
+        });
         await audit(user.id, env.server_id, "domain.delete", p[3]);
         return json({ ok: true });
       }
@@ -893,17 +993,20 @@ async function handle(request: NextRequest, path: string[], method: string) {
       const b = await body(request);
       const ref = b.imageRef ? imageRef(b.imageRef) : env.image_ref;
       if (!ref) throw new HttpError(400, "Configure an image first");
-      const result = await transaction(async (c) => {
-        const d = (
-          await c.query(
-            "INSERT INTO deployments(environment_id,image_ref) VALUES($1,$2) RETURNING id,status",
-            [env.id, ref],
-          )
-        ).rows[0];
-        await c.query(
-          "INSERT INTO deployment_jobs(server_id,environment_id,deployment_id,kind,payload) VALUES($1,$2,$3,'deploy',$4)",
-          [env.server_id, env.id, d.id, JSON.stringify({ imageRef: ref })],
-        );
+      const result = await prisma.$transaction(async (db) => {
+        const d = await db.deployments.create({
+          data: { environment_id: env.id, image_ref: ref },
+          select: { id: true, status: true },
+        });
+        await db.deployment_jobs.create({
+          data: {
+            server_id: env.server_id,
+            environment_id: env.id,
+            deployment_id: d.id,
+            kind: "deploy",
+            payload: { imageRef: ref },
+          },
+        });
         return d;
       });
       await audit(user.id, env.server_id, "deployment.create", result.id);
@@ -916,15 +1019,18 @@ async function handle(request: NextRequest, path: string[], method: string) {
       if (!env.active_deployment_id)
         throw new HttpError(409, "No active deployment");
       if (p[2] === "logs")
-        await pool.query(
-          "DELETE FROM deployment_jobs WHERE kind='logs' AND finished_at<now()-interval '7 days'",
-        );
-      const r = await pool.query(
-        "INSERT INTO deployment_jobs(server_id,environment_id,kind) VALUES($1,$2,$3) RETURNING id,status",
-        [env.server_id, env.id, p[2]],
-      );
+        await prisma.deployment_jobs.deleteMany({
+          where: {
+            kind: "logs",
+            finished_at: { lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+        });
+      const job = await prisma.deployment_jobs.create({
+        data: { server_id: env.server_id, environment_id: env.id, kind: p[2] },
+        select: { id: true, status: true },
+      });
       await audit(user.id, env.server_id, `environment.${p[2]}`, env.id);
-      return json({ job: r.rows[0] }, 201);
+      return json({ job }, 201);
     }
   }
   if (
@@ -933,30 +1039,48 @@ async function handle(request: NextRequest, path: string[], method: string) {
     p[2] === "redeploy" &&
     method === "POST"
   ) {
-    const r = await pool.query(
-      `SELECT d.image_digest,e.id AS environment_id,p.server_id FROM deployments d JOIN environments e ON e.id=d.environment_id JOIN projects p ON p.id=e.project_id WHERE d.id=$1 AND p.user_id=$2`,
-      [uuid(p[1]), user.id],
-    );
-    if (!r.rowCount) throw new HttpError(404, "Deployment not found");
-    if (!r.rows[0].image_digest?.includes("@sha256:"))
+    const oldDeployment = await prisma.deployments.findFirst({
+      where: {
+        id: uuid(p[1]),
+        environments_deployments_environment_idToenvironments: {
+          projects: { user_id: user.id },
+        },
+      },
+      select: {
+        image_digest: true,
+        environment_id: true,
+        environments_deployments_environment_idToenvironments: {
+          select: { projects: { select: { server_id: true } } },
+        },
+      },
+    });
+    if (!oldDeployment) throw new HttpError(404, "Deployment not found");
+    if (!oldDeployment.image_digest?.includes("@sha256:"))
       throw new HttpError(409, "This deployment has no immutable image digest");
-    const old = r.rows[0];
-    const created = await transaction(async (c) => {
-      const d = (
-        await c.query(
-          "INSERT INTO deployments(environment_id,image_ref) VALUES($1,$2) RETURNING id",
-          [old.environment_id, old.image_digest],
-        )
-      ).rows[0];
-      await c.query(
-        "INSERT INTO deployment_jobs(server_id,environment_id,deployment_id,kind,payload) VALUES($1,$2,$3,'deploy',$4)",
-        [
-          old.server_id,
-          old.environment_id,
-          d.id,
-          JSON.stringify({ imageRef: old.image_digest }),
-        ],
-      );
+    const old = {
+      image_digest: oldDeployment.image_digest,
+      environment_id: oldDeployment.environment_id,
+      server_id:
+        oldDeployment.environments_deployments_environment_idToenvironments
+          .projects.server_id,
+    };
+    const created = await prisma.$transaction(async (db) => {
+      const d = await db.deployments.create({
+        data: {
+          environment_id: old.environment_id,
+          image_ref: old.image_digest,
+        },
+        select: { id: true },
+      });
+      await db.deployment_jobs.create({
+        data: {
+          server_id: old.server_id,
+          environment_id: old.environment_id,
+          deployment_id: d.id,
+          kind: "deploy",
+          payload: { imageRef: old.image_digest },
+        },
+      });
       return d;
     });
     await audit(user.id, old.server_id, "deployment.redeploy", created.id);
@@ -964,26 +1088,95 @@ async function handle(request: NextRequest, path: string[], method: string) {
   }
   if (p[0] === "deployments" && method === "GET") {
     if (p[1]) {
-      const r = await pool.query(
-        `SELECT d.*,p.name AS project,e.name AS environment,j.error,j.result FROM deployments d JOIN environments e ON e.id=d.environment_id JOIN projects p ON p.id=e.project_id LEFT JOIN deployment_jobs j ON j.deployment_id=d.id WHERE d.id=$1 AND p.user_id=$2`,
-        [uuid(p[1]), user.id],
-      );
-      if (!r.rowCount) throw new HttpError(404, "Deployment not found");
-      return json({ deployment: r.rows[0] });
+      const deployment = await prisma.deployments.findFirst({
+        where: {
+          id: uuid(p[1]),
+          environments_deployments_environment_idToenvironments: {
+            projects: { user_id: user.id },
+          },
+        },
+        include: {
+          environments_deployments_environment_idToenvironments: {
+            select: { name: true, projects: { select: { name: true } } },
+          },
+          deployment_jobs: {
+            where: { kind: "deploy" },
+            select: { error: true, result: true },
+            take: 1,
+          },
+        },
+      });
+      if (!deployment) throw new HttpError(404, "Deployment not found");
+      const {
+        environments_deployments_environment_idToenvironments: environment,
+        deployment_jobs: jobs,
+        ...fields
+      } = deployment;
+      return json({
+        deployment: {
+          ...fields,
+          project: environment.projects.name,
+          environment: environment.name,
+          error: jobs[0]?.error ?? null,
+          result: jobs[0]?.result ?? null,
+        },
+      });
     }
-    const r = await pool.query(
-      `SELECT d.id,d.image_ref,d.image_digest,d.status,d.message,d.created_at,d.finished_at,p.name AS project,e.name AS environment FROM deployments d JOIN environments e ON e.id=d.environment_id JOIN projects p ON p.id=e.project_id WHERE p.user_id=$1 ORDER BY d.created_at DESC LIMIT 100`,
-      [user.id],
-    );
-    return json({ deployments: r.rows });
+    const deployments = await prisma.deployments.findMany({
+      where: {
+        environments_deployments_environment_idToenvironments: {
+          projects: { user_id: user.id },
+        },
+      },
+      orderBy: { created_at: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        image_ref: true,
+        image_digest: true,
+        status: true,
+        message: true,
+        created_at: true,
+        finished_at: true,
+        environments_deployments_environment_idToenvironments: {
+          select: { name: true, projects: { select: { name: true } } },
+        },
+      },
+    });
+    return json({
+      deployments: deployments.map((d) => ({
+        id: d.id,
+        image_ref: d.image_ref,
+        image_digest: d.image_digest,
+        status: d.status,
+        message: d.message,
+        created_at: d.created_at,
+        finished_at: d.finished_at,
+        project:
+          d.environments_deployments_environment_idToenvironments.projects.name,
+        environment:
+          d.environments_deployments_environment_idToenvironments.name,
+      })),
+    });
   }
   if (p[0] === "jobs" && p[1] && method === "GET") {
-    const r = await pool.query(
-      `SELECT j.id,j.kind,j.status,j.result,j.error,j.created_at,j.finished_at FROM deployment_jobs j JOIN environments e ON e.id=j.environment_id JOIN projects p ON p.id=e.project_id WHERE j.id=$1 AND p.user_id=$2`,
-      [uuid(p[1]), user.id],
-    );
-    if (!r.rowCount) throw new HttpError(404, "Job not found");
-    return json({ job: r.rows[0] });
+    const job = await prisma.deployment_jobs.findFirst({
+      where: {
+        id: uuid(p[1]),
+        environments: { projects: { user_id: user.id } },
+      },
+      select: {
+        id: true,
+        kind: true,
+        status: true,
+        result: true,
+        error: true,
+        created_at: true,
+        finished_at: true,
+      },
+    });
+    if (!job) throw new HttpError(404, "Job not found");
+    return json({ job });
   }
   throw new HttpError(404, "Endpoint not found");
 }
@@ -999,14 +1192,14 @@ async function route(
     if (error instanceof HttpError)
       return json({ error: error.message }, error.status);
     const code = (error as { code?: string }).code;
-    if (code === "23505")
+    if (code === "23505" || code === "P2002")
       return json(
         {
           error: "Resource already exists or another operation is in progress",
         },
         409,
       );
-    if (code === "23503")
+    if (code === "23503" || code === "P2003")
       return json({ error: "Related resource not found" }, 400);
     console.error(
       "API failure",

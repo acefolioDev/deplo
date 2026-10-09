@@ -4,11 +4,11 @@ import { ArrowRight, Box } from "lucide-react";
 import { Button, Input } from "@/components/ui";
 import { post } from "@/components/api";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [bootstrap, setBootstrap] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) {
@@ -16,13 +16,7 @@ export default function Login() {
     setBusy(true);
     setError("");
     try {
-      await post(
-        bootstrap ? "auth/bootstrap" : "auth/login",
-        bootstrap
-          ? { email, password, bootstrapToken: bootstrap }
-          : { email, password },
-      );
-      if (bootstrap) await post("auth/login", { email, password });
+      await post("auth/login", { email, password });
       router.replace("/");
       router.refresh();
     } catch (x) {
@@ -79,22 +73,6 @@ export default function Login() {
               placeholder="••••••••••••"
             />
           </label>
-          <details className="mt-5 text-xs text-slate-500">
-            <summary className="cursor-pointer hover:text-slate-300">
-              First time setup
-            </summary>
-            <p className="mt-2 leading-relaxed">
-              Enter the bootstrap token from your control plane environment.
-              This creates the first owner account.
-            </p>
-            <Input
-              type="password"
-              value={bootstrap}
-              onChange={(e) => setBootstrap(e.target.value)}
-              className="mt-2"
-              placeholder="Bootstrap token"
-            />
-          </details>
           {error && (
             <p
               role="alert"
@@ -104,14 +82,19 @@ export default function Login() {
             </p>
           )}
           <Button type="submit" disabled={busy} className="mt-6 w-full">
-            {busy
-              ? "Please wait…"
-              : bootstrap
-                ? "Create owner account"
-                : "Sign in"}
+            {busy ? "Please wait…" : "Sign in"}
             <ArrowRight size={16} />
           </Button>
         </form>
+        <p className="mt-5 text-center text-sm text-slate-400">
+          New to Deplo?{" "}
+          <Link
+            href="/register"
+            className="font-medium text-emerald-300 hover:text-emerald-200"
+          >
+            Create an account
+          </Link>
+        </p>
         <p className="mt-6 text-center text-xs text-slate-600">
           Your applications run on your own infrastructure.
         </p>

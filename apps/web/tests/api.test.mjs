@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes, scryptSync } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import pg from "pg";
 
 const databaseURL = process.env.DEPLO_TEST_DATABASE_URL;
@@ -19,16 +19,16 @@ if (!databaseURL) {
     "Refusing to reset a database without the deplo_test name",
   );
   const root = new URL("../../..", import.meta.url).pathname;
-  const port = 3456;
+  const port = 3457;
   const publicURL = `http://localhost:${port}`;
-  const token = randomBytes(32).toString("hex");
   const key = randomBytes(32).toString("base64");
+  const registrationCode = randomBytes(24).toString("hex");
   const env = {
     ...process.env,
     DATABASE_URL: databaseURL,
     PUBLIC_URL: publicURL,
-    BOOTSTRAP_TOKEN: token,
     ENCRYPTION_KEY: key,
+    REGISTRATION_CODE: registrationCode,
   };
   test("control plane integration", async (t) => {
     const client = new pg.Client({ connectionString: databaseURL });
@@ -82,10 +82,10 @@ if (!databaseURL) {
     };
     let r = await call("servers");
     assert.equal(r.status, 401, output);
-    r = await call("auth/bootstrap", "POST", {
+    r = await call("auth/register", "POST", {
       email: "owner@example.com",
       password: "strong-password-1234",
-      bootstrapToken: token,
+      registrationCode,
     });
     assert.equal(r.status, 201, JSON.stringify(r.data));
     r = await call("auth/login", "POST", {
@@ -454,21 +454,49 @@ if (!databaseURL) {
       cookie,
     );
     assert.equal(r.status, 201);
-    const salt = randomBytes(16).toString("hex");
-    const hash = scryptSync("another-strong-password", salt, 64).toString(
-      "hex",
-    );
-    await direct.query("INSERT INTO users(email,password_hash) VALUES($1,$2)", [
-      "other@example.com",
-      `scrypt:${salt}:${hash}`,
-    ]);
-    r = await call("auth/login", "POST", {
+    r = await call("auth/register", "POST", {
       email: "other@example.com",
       password: "another-strong-password",
     });
+    assert.equal(
+      r.status,
+      403,
+      "Production registration requires the host code",
+    );
+    r = await call("auth/register", "POST", {
+      email: "other@example.com",
+      password: "another-strong-password",
+      registrationCode,
+    });
+    assert.equal(r.status, 201, JSON.stringify(r.data));
     const otherCookie = r.cookie.split(";")[0];
+    r = await call("auth/register", "POST", {
+      email: "other@example.com",
+      password: "another-strong-password",
+      registrationCode,
+    });
+    assert.equal(r.status, 409, "Email must be unique");
+    r = await call("servers", "GET", undefined, null, otherCookie);
+    assert.deepEqual(
+      r.data.servers,
+      [],
+      "New account must start with no servers",
+    );
     r = await call(`servers/${serverId}/pair`, "POST", {}, null, otherCookie);
     assert.equal(r.status, 404, "Other owner must not access server");
+    r = await call(
+      "servers",
+      "POST",
+      { name: "Second account VPS" },
+      null,
+      otherCookie,
+    );
+    assert.equal(r.status, 201);
+    r = await call("servers", "GET", undefined, null, cookie);
+    assert.equal(
+      r.data.servers.some((server) => server.name === "Second account VPS"),
+      false,
+    );
     for (const endpoint of ["auth/me", "servers", "projects", "overview"]) {
       const timings = [];
       for (let i = 0; i < 100; i++) {

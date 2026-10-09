@@ -40,13 +40,11 @@ export default function DocsPage() {
         ))}
       </div>
       <Card className="mt-6 p-6">
-        <h2 className="font-semibold">Detailed operator guides</h2>
+        <h2 className="font-semibold">Guides</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          The repository includes <code>docs/agent-installation.md</code>,{" "}
-          <code>docs/local-development.md</code>,{" "}
-          <code>docs/deployment.md</code>, <code>docs/security.md</code>, and{" "}
-          <code>docs/troubleshooting.md</code>. Review those files before using
-          a public VPS.
+          The repository has two guides: <code>docs/USER_GUIDE.md</code> for
+          developers connecting servers and deploying applications, and{" "}
+          <code>docs/PRODUCTION.md</code> for the Deplo host operator.
         </p>
       </Card>
     </>

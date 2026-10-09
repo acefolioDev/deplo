@@ -43,7 +43,6 @@ async function state() {
     database,
     adminURL,
     databaseURL: databaseURL.toString(),
-    bootstrapToken: randomBytes(32).toString("hex"),
     encryptionKey: randomBytes(32).toString("base64"),
     email: "demo@deplo.local",
     password: randomBytes(18).toString("base64url"),
@@ -96,7 +95,7 @@ try {
     ...process.env,
     DATABASE_URL: config.databaseURL,
     PUBLIC_URL: origin,
-    BOOTSTRAP_TOKEN: config.bootstrapToken,
+    REGISTRATION_CODE: "",
     ENCRYPTION_KEY: config.encryptionKey,
     HOSTNAME: "127.0.0.1",
     PORT: "3456",
@@ -119,18 +118,17 @@ try {
     await db.end();
   }
   if (!hasOwner) {
-    const response = await fetch(origin + "/api/auth/bootstrap", {
+    const response = await fetch(origin + "/api/auth/register", {
       method: "POST",
       headers: { Origin: origin, "Content-Type": "application/json" },
       body: JSON.stringify({
         email: config.email,
         password: config.password,
-        bootstrapToken: config.bootstrapToken,
       }),
     });
     if (!response.ok)
       throw new Error(
-        `Demo owner setup failed: ${response.status} ${await response.text()}`,
+        `Demo account setup failed: ${response.status} ${await response.text()}`,
       );
   }
   console.log(`\nDeplo is ready: ${origin}`);

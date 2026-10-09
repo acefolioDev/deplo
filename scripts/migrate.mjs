@@ -1,20 +1,43 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import pg from 'pg';
+import { spawnSync } from "node:child_process";
+import pg from "pg";
+
+if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL is required");
+
+function prisma(...args) {
+  const result = spawnSync(
+    "npx",
+    [
+      "--no-install",
+      "prisma",
+      ...args,
+      "--schema",
+      "apps/web/prisma/schema.prisma",
+    ],
+    {
+      stdio: "inherit",
+      env: process.env,
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Prisma ${args.join(" ")} failed`);
+}
+
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await db.connect();
+let legacy;
+let prismaHistory;
 try {
-  await db.query('BEGIN');
-  await db.query('CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
-  for (const name of (await fs.readdir('packages/db/migrations')).filter(x => x.endsWith('.sql')).sort()) {
-    const exists = await db.query('SELECT 1 FROM schema_migrations WHERE name=$1', [name]);
-    if (exists.rowCount) continue;
-    await db.query(await fs.readFile(path.join('packages/db/migrations', name), 'utf8'));
-    await db.query('INSERT INTO schema_migrations(name) VALUES($1)', [name]);
-    console.log(`Applied ${name}`);
-  }
-  await db.query('COMMIT');
-} catch (error) {
-  await db.query('ROLLBACK');
-  throw error;
-} finally { await db.end(); }
+  const result = await db.query(
+    "SELECT to_regclass('public.schema_migrations') IS NOT NULL AS legacy, to_regclass('public._prisma_migrations') IS NOT NULL AS prisma_history",
+  );
+  legacy = result.rows[0].legacy;
+  prismaHistory = result.rows[0].prisma_history;
+} finally {
+  await db.end();
+}
+
+// Existing Deplo databases have the same initial schema under the old migration ledger.
+if (legacy && !prismaHistory)
+  prisma("migrate", "resolve", "--applied", "20261010000000_initial");
+prisma("migrate", "deploy");
+prisma("generate");

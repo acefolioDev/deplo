@@ -1,6 +1,12 @@
 import pg from "pg";
+import { PrismaClient } from "@prisma/client";
 
-const globalPool = globalThis as typeof globalThis & { deploPool?: pg.Pool };
+const globalPool = globalThis as typeof globalThis & {
+  deploPool?: pg.Pool;
+  deploPrisma?: PrismaClient;
+};
+export const prisma = globalPool.deploPrisma ?? new PrismaClient();
+if (process.env.NODE_ENV !== "production") globalPool.deploPrisma = prisma;
 export const pool =
   globalPool.deploPool ??
   new pg.Pool({

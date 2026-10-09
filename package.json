@@ -12,6 +12,7 @@
     "typecheck": "npm run typecheck -w @deplo/web",
     "test": "npm run test -w @deplo/web && cd agent && go test ./...",
     "db:migrate": "node scripts/migrate.mjs",
+    "db:generate": "prisma generate --schema apps/web/prisma/schema.prisma",
     "format": "prettier --write 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
     "format:check": "prettier --check 'apps/web/src/**/*.{ts,tsx,css}' 'apps/web/scripts/*.mjs' 'apps/web/tests/*.mjs'",
     "lint": "npm run lint -w @deplo/web"
@@ -22,6 +23,13 @@
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "3.9.9",
+    "prisma": "^6.19.3",
     "typescript-eslint": "^8.71.1"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3"
   }
 }
