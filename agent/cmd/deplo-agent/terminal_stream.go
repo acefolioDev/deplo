@@ -17,6 +17,7 @@ type terminalFrame struct {
 	Type      string    `json:"type"`
 	SessionID string    `json:"sessionId,omitempty"`
 	Data      string    `json:"data,omitempty"`
+	SDP       string    `json:"sdp,omitempty"`
 	ExpiresAt time.Time `json:"expiresAt,omitempty"`
 	Cols      uint16    `json:"cols,omitempty"`
 	Rows      uint16    `json:"rows,omitempty"`
@@ -78,7 +79,9 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 		return err
 	}
 	defer conn.Close()
-	conn.SetReadLimit(16384)
+	conn.SetReadLimit(65536)
+	var rtc *terminalRTC
+	defer func() { rtc.close() }()
 	frames := make(chan terminalFrame, 128)
 	incoming := make(chan terminalFrame, 32)
 	errorsFromSocket := make(chan error, 2)
@@ -119,6 +122,8 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 	}()
 	for {
 		if *current != nil && !time.Now().Before((*current).expiresAt) {
+			rtc.close()
+			rtc = nil
 			(*current).close()
 			*current = nil
 		}
@@ -139,6 +144,8 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 					continue
 				}
 				if *current != nil && (*current).id != frame.SessionID {
+					rtc.close()
+					rtc = nil
 					(*current).close()
 					*current = nil
 				}
@@ -172,8 +179,27 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 				}
 			case "close":
 				if *current != nil && (*current).id == frame.SessionID {
+					rtc.close()
+					rtc = nil
 					(*current).close()
 					*current = nil
+				}
+			case "rtc-offer":
+				if *current == nil || (*current).id != frame.SessionID || len(frame.SDP) == 0 || len(frame.SDP) > 32000 {
+					continue
+				}
+				rtc.close()
+				rtc = nil
+				sessionID := frame.SessionID
+				process := *current
+				candidate, rtcErr := startTerminalRTC(process, frame.SDP, func(sdp string) {
+					select {
+					case frames <- terminalFrame{Type: "rtc-answer", SessionID: sessionID, SDP: sdp}:
+					case <-stop:
+					}
+				})
+				if rtcErr == nil {
+					rtc = candidate
 				}
 			case "ping":
 				if *current != nil && (*current).id == frame.SessionID {
@@ -190,7 +216,9 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 				}
 			}
 		sendOutput:
-			frames <- terminalFrame{Type: "output", SessionID: (*current).id, Data: base64.StdEncoding.EncodeToString(chunk)}
+			if !rtc.send(chunk) {
+				frames <- terminalFrame{Type: "output", SessionID: (*current).id, Data: base64.StdEncoding.EncodeToString(chunk)}
+			}
 		case <-time.After(250 * time.Millisecond):
 			if *current != nil {
 				select {
@@ -199,6 +227,8 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 					case <-(*current).readerDone:
 						if len((*current).output) == 0 {
 							frames <- terminalFrame{Type: "closed", SessionID: (*current).id}
+							rtc.close()
+							rtc = nil
 							(*current).close()
 							*current = nil
 						}

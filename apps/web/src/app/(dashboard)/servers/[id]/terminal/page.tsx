@@ -127,21 +127,106 @@ export default function ServerTerminalPage() {
         let retry = 250;
         let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
         let pingTimer: ReturnType<typeof setInterval> | undefined;
+        let directTimer: ReturnType<typeof setTimeout> | undefined;
+        let peer: RTCPeerConnection | undefined;
+        let channel: RTCDataChannel | undefined;
+        let direct = false;
         let queued = "";
         let connected = false;
+        const statusText = (rtt?: number) =>
+          `${direct ? "Direct LAN shell" : "Root shell"} active${rtt === undefined ? "" : ` · ${rtt} ms round trip`} · expires ${new Date(session.expiresAt).toLocaleTimeString()}`;
         const ping = () => {
-          if (connected && socket?.readyState === WebSocket.OPEN)
+          if (direct && channel?.readyState === "open")
+            channel.send(`ping:${Date.now()}`);
+          else if (connected && socket?.readyState === WebSocket.OPEN)
             socket.send(JSON.stringify({ type: "ping", nonce: Date.now() }));
         };
         const sendInput = (value: string) => {
           const bytes = new TextEncoder().encode(value);
-          for (let offset = 0; offset < bytes.length; offset += 4096)
-            socket?.send(
+          for (let offset = 0; offset < bytes.length; offset += 4096) {
+            const chunk = bytes.subarray(offset, offset + 4096);
+            if (direct && channel?.readyState === "open") channel.send(chunk);
+            else
+              socket?.send(
+                JSON.stringify({ type: "input", data: encode(chunk) }),
+              );
+          }
+        };
+        const closeDirect = () => {
+          clearTimeout(directTimer);
+          direct = false;
+          channel?.close();
+          peer?.close();
+          channel = undefined;
+          peer = undefined;
+        };
+        const connectDirect = async () => {
+          if (peer || typeof RTCPeerConnection === "undefined") return;
+          const candidate = new RTCPeerConnection({ iceServers: [] });
+          peer = candidate;
+          const dataChannel = candidate.createDataChannel("terminal", {
+            ordered: true,
+          });
+          channel = dataChannel;
+          dataChannel.binaryType = "arraybuffer";
+          dataChannel.onopen = () => {
+            clearTimeout(directTimer);
+            direct = true;
+            setStatus(statusText());
+            ping();
+          };
+          dataChannel.onclose = () => {
+            direct = false;
+            if (!cancelled) setStatus(statusText());
+          };
+          dataChannel.onmessage = (message) => {
+            if (typeof message.data === "string") {
+              if (message.data.startsWith("pong:")) {
+                const nonce = Number(message.data.slice(5));
+                if (Number.isSafeInteger(nonce))
+                  setStatus(statusText(Date.now() - nonce));
+              }
+            } else if (message.data instanceof ArrayBuffer)
+              terminal.write(new Uint8Array(message.data));
+          };
+          candidate.onconnectionstatechange = () => {
+            if (candidate.connectionState === "failed") closeDirect();
+          };
+          const offer = await candidate.createOffer();
+          await candidate.setLocalDescription(offer);
+          if (candidate.iceGatheringState !== "complete") {
+            const complete = await new Promise<boolean>((resolve) => {
+              const timeout = setTimeout(() => {
+                candidate.removeEventListener("icegatheringstatechange", done);
+                resolve(false);
+              }, 3000);
+              const done = () => {
+                if (candidate.iceGatheringState !== "complete") return;
+                clearTimeout(timeout);
+                candidate.removeEventListener("icegatheringstatechange", done);
+                resolve(true);
+              };
+              candidate.addEventListener("icegatheringstatechange", done);
+            });
+            if (!complete) {
+              closeDirect();
+              return;
+            }
+          }
+          if (
+            peer === candidate &&
+            socket?.readyState === WebSocket.OPEN &&
+            candidate.localDescription
+          )
+            socket.send(
               JSON.stringify({
-                type: "input",
-                data: encode(bytes.subarray(offset, offset + 4096)),
+                type: "rtc-offer",
+                sdp: candidate.localDescription.sdp,
               }),
             );
+          directTimer = setTimeout(() => {
+            if (!direct) closeDirect();
+          }, 6000);
         };
         const subscription = terminal.onData((data) => {
           if (connected && socket?.readyState === WebSocket.OPEN)
@@ -160,6 +245,7 @@ export default function ServerTerminalPage() {
             const event = JSON.parse(message.data as string) as {
               type: string;
               data?: string;
+              sdp?: string;
               expiresAt?: string;
               nonce?: number;
             };
@@ -179,18 +265,19 @@ export default function ServerTerminalPage() {
                 queued = "";
               }
             } else if (event.type === "started") {
-              setStatus(
-                `Root shell active · expires ${new Date(session.expiresAt).toLocaleTimeString()}`,
-              );
+              setStatus(statusText());
               ping();
               if (!pingTimer) pingTimer = setInterval(ping, 30_000);
+              void connectDirect().catch(closeDirect);
+            } else if (event.type === "rtc-answer" && event.sdp && peer) {
+              void peer
+                .setRemoteDescription({ type: "answer", sdp: event.sdp })
+                .catch(closeDirect);
             } else if (event.type === "output" && event.data) {
               terminal.write(decode(event.data));
             } else if (event.type === "pong" && event.nonce) {
               const rtt = Date.now() - event.nonce;
-              setStatus(
-                `Root shell active · ${rtt} ms round trip · expires ${new Date(session.expiresAt).toLocaleTimeString()}`,
-              );
+              if (!direct) setStatus(statusText(rtt));
             } else if (event.type === "closed") {
               setStatus("Session closed");
               setSession(null);
@@ -198,6 +285,9 @@ export default function ServerTerminalPage() {
           };
           socket.onclose = () => {
             connected = false;
+            closeDirect();
+            clearInterval(pingTimer);
+            pingTimer = undefined;
             if (cancelled) return;
             if (Date.now() >= new Date(session.expiresAt).getTime()) {
               setStatus("Session expired");
@@ -217,6 +307,7 @@ export default function ServerTerminalPage() {
           observer.disconnect();
           clearTimeout(reconnectTimer);
           clearInterval(pingTimer);
+          closeDirect();
           socket?.close();
           terminal.dispose();
         };

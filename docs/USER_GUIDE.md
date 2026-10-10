@@ -16,7 +16,7 @@ Copy the command to a terminal on the VPS and run it. The installer verifies the
 
 If pairing says **Invalid or expired pairing token**, click **Pair token** again, use **Copy token** to copy the newly displayed token, and rerun the same setup command on the VPS. The previous failed attempt leaves the agent stopped; you do not need to remove it first.
 
-To update an already paired agent, run the same setup command again. It keeps the existing server identity and does not ask for another pairing token. Agent 0.1.2 or later uses a live WebSocket terminal when the Deplo host has Redis configured, so commands stream while running and Ctrl+C is sent immediately.
+To update an already paired agent, run the same setup command again. It keeps the existing server identity and does not ask for another pairing token. Agent 0.1.2 or later uses a live WebSocket terminal when the Deplo host has Redis configured, so commands stream while running and Ctrl+C is sent immediately. Agent 0.1.4 or later also tries a direct encrypted browser-to-server connection for lower latency when both devices can reach each other on the same network. It uses the WebSocket automatically if a direct connection is unavailable; no extra software is required.
 
 Your Deplo URL must use a trusted HTTPS certificate that the VPS accepts. A local HTTP development server cannot connect a remote VPS.
 
@@ -26,7 +26,7 @@ Open **Servers → Root terminal**, enter your Deplo password, and run commands 
 
 The root terminal starts in `/root` on the actual server. A normal Linux account usually starts in `/home/<username>`, so files created with relative paths in the two terminals appear in different folders. Run `pwd` to check your location. Use `cd /home/<username>` in Deplo to work in your normal home folder. Files created there as root are owned by root; run `chown <username>:<username> <path>` if your normal account needs to edit them.
 
-To check the live terminal, run `sleep 30` and press Ctrl+C. The prompt should return without waiting for the command to finish. The status line shows the measured browser-to-server round trip over the WebSocket. In browser developer tools, terminal activity should use one WebSocket connection rather than repeated terminal HTTP requests. The connection automatically resumes when Vercel closes a function at its duration limit; the root shell remains on the VPS during reconnection.
+To check the live terminal, run `sleep 30` and press Ctrl+C. The prompt should return without waiting for the command to finish. The status line shows the measured browser-to-server round trip and says **Direct LAN shell** when the fast local path connects. In browser developer tools, terminal activity should use one WebSocket connection rather than repeated terminal HTTP requests. The connection automatically resumes when Vercel closes a function at its duration limit; the root shell remains on the VPS during reconnection.
 
 When you decide to deploy a container image, install and start Docker from that terminal:
 

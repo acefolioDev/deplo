@@ -108,6 +108,17 @@ export async function GET(request: NextRequest) {
             }).catch(() => {});
             ws.close(1000);
           } else if (
+            event.type === "rtc-offer" &&
+            typeof event.sdp === "string" &&
+            event.sdp.length > 0 &&
+            event.sdp.length <= 32000
+          ) {
+            void relayPublish(serverChannel(session.server_id), {
+              type: "rtc-offer",
+              sessionId,
+              sdp: event.sdp,
+            }).catch(() => ws.close(1011));
+          } else if (
             event.type === "ping" &&
             Number.isSafeInteger(event.nonce) &&
             Math.abs(Date.now() - Number(event.nonce)) < 5000
@@ -133,7 +144,7 @@ export async function GET(request: NextRequest) {
           );
         })().catch(() => ws.close(1011));
       },
-      { maxPayload: 8192 },
+      { maxPayload: 65536 },
     );
   }
 
@@ -220,6 +231,21 @@ export async function GET(request: NextRequest) {
                 nonce: event.nonce,
               });
             })().catch(() => ws.close(1011));
+          } else if (
+            event.type === "rtc-answer" &&
+            typeof event.sdp === "string" &&
+            event.sdp.length > 0 &&
+            event.sdp.length <= 32000
+          ) {
+            const sdp = event.sdp;
+            void (async () => {
+              if (!allowed.has(sessionId) && !(await pending.get(sessionId)))
+                return ws.close(1008);
+              await relayPublish(sessionChannel(sessionId), {
+                type: "rtc-answer",
+                sdp,
+              });
+            })().catch(() => ws.close(1011));
           } else if (event.type === "closed") {
             void (async () => {
               if (!allowed.has(sessionId) && !(await pending.get(sessionId)))
@@ -252,7 +278,7 @@ export async function GET(request: NextRequest) {
             );
         })().catch(() => ws.close(1011));
       },
-      { maxPayload: 16384 },
+      { maxPayload: 65536 },
     );
   }
 
