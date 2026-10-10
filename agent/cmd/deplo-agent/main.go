@@ -23,7 +23,7 @@ import (
 	"deplo/agent/internal/metrics"
 )
 
-const version = "0.1.1"
+const version = "0.1.2"
 
 type config struct {
 	URL            string
@@ -118,7 +118,7 @@ func main() {
 			logger.Error("root terminal requires the agent to run as root")
 			os.Exit(1)
 		}
-		go a.runTerminal(ctx, logger)
+		go a.runTerminalTransport(ctx, logger)
 	}
 	nextHeartbeat := time.Time{}
 	idle := 2 * time.Second

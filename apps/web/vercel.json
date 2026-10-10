@@ -1,4 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "functions": {
+    "src/app/api/terminal/ws/route.ts": {
+      "regions": ["bom1"],
+      "maxDuration": 300
+    }
+  }
 }

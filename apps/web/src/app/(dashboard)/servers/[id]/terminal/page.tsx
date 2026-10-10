@@ -6,7 +6,11 @@ import { api, post } from "@/components/api";
 import { Button, Card, Input, SectionHead } from "@/components/ui";
 import "@xterm/xterm/css/xterm.css";
 
-type Session = { sessionId: string; expiresAt: string };
+type Session = {
+  sessionId: string;
+  expiresAt: string;
+  transport: "http" | "websocket";
+};
 type Output = { id: string; data: string };
 type Snapshot = { status: string; expiresAt: string; output: Output[] };
 type ServerInfo = {
@@ -81,6 +85,7 @@ export default function ServerTerminalPage() {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     let dispose: (() => void) | undefined;
+    let socket: WebSocket | undefined;
     let cursor = 0;
     const sessionId = session.sessionId;
     void (async () => {
@@ -103,7 +108,11 @@ export default function ServerTerminalPage() {
       terminal.loadAddon(fit);
       terminal.open(terminalRef.current);
       const resize = terminal.onResize(({ cols, rows }) => {
-        if (cols >= 20 && cols <= 300 && rows >= 5 && rows <= 100)
+        if (cols < 20 || cols > 300 || rows < 5 || rows > 100) return;
+        if (session.transport === "websocket") {
+          if (socket?.readyState === WebSocket.OPEN)
+            socket.send(JSON.stringify({ type: "resize", cols, rows }));
+        } else
           void post(`servers/${serverId}/terminal/${sessionId}/resize`, {
             cols,
             rows,
@@ -111,6 +120,108 @@ export default function ServerTerminalPage() {
       });
       fit.fit();
       terminal.focus();
+      const observer = new ResizeObserver(() => fit.fit());
+      observer.observe(terminalRef.current);
+
+      if (session.transport === "websocket") {
+        let retry = 250;
+        let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+        let pingTimer: ReturnType<typeof setInterval> | undefined;
+        let queued = "";
+        let connected = false;
+        const ping = () => {
+          if (connected && socket?.readyState === WebSocket.OPEN)
+            socket.send(JSON.stringify({ type: "ping", nonce: Date.now() }));
+        };
+        const sendInput = (value: string) => {
+          const bytes = new TextEncoder().encode(value);
+          for (let offset = 0; offset < bytes.length; offset += 4096)
+            socket?.send(
+              JSON.stringify({
+                type: "input",
+                data: encode(bytes.subarray(offset, offset + 4096)),
+              }),
+            );
+        };
+        const subscription = terminal.onData((data) => {
+          if (connected && socket?.readyState === WebSocket.OPEN)
+            sendInput(data);
+          else queued += data;
+        });
+        const connect = () => {
+          if (cancelled || Date.now() >= new Date(session.expiresAt).getTime())
+            return;
+          const url = new URL("/api/terminal/ws", window.location.href);
+          url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+          url.searchParams.set("role", "browser");
+          url.searchParams.set("sessionId", sessionId);
+          socket = new WebSocket(url);
+          socket.onmessage = (message) => {
+            const event = JSON.parse(message.data as string) as {
+              type: string;
+              data?: string;
+              expiresAt?: string;
+              nonce?: number;
+            };
+            if (event.type === "ready") {
+              connected = true;
+              retry = 250;
+              setStatus("Connecting to server…");
+              socket?.send(
+                JSON.stringify({
+                  type: "resize",
+                  cols: terminal.cols,
+                  rows: terminal.rows,
+                }),
+              );
+              if (queued) {
+                sendInput(queued);
+                queued = "";
+              }
+            } else if (event.type === "started") {
+              setStatus(
+                `Root shell active · expires ${new Date(session.expiresAt).toLocaleTimeString()}`,
+              );
+              ping();
+              if (!pingTimer) pingTimer = setInterval(ping, 30_000);
+            } else if (event.type === "output" && event.data) {
+              terminal.write(decode(event.data));
+            } else if (event.type === "pong" && event.nonce) {
+              const rtt = Date.now() - event.nonce;
+              setStatus(
+                `Root shell active · ${rtt} ms round trip · expires ${new Date(session.expiresAt).toLocaleTimeString()}`,
+              );
+            } else if (event.type === "closed") {
+              setStatus("Session closed");
+              setSession(null);
+            }
+          };
+          socket.onclose = () => {
+            connected = false;
+            if (cancelled) return;
+            if (Date.now() >= new Date(session.expiresAt).getTime()) {
+              setStatus("Session expired");
+              setSession(null);
+              return;
+            }
+            setStatus("Reconnecting to server…");
+            reconnectTimer = setTimeout(connect, retry);
+            retry = Math.min(retry * 2, 5000);
+          };
+          socket.onerror = () => socket?.close();
+        };
+        connect();
+        dispose = () => {
+          subscription.dispose();
+          resize.dispose();
+          observer.disconnect();
+          clearTimeout(reconnectTimer);
+          clearInterval(pingTimer);
+          socket?.close();
+          terminal.dispose();
+        };
+        return;
+      }
       let pendingInput = "";
       let sendingInput = false;
       let inputTimer: ReturnType<typeof setTimeout> | undefined;
@@ -143,8 +254,6 @@ export default function ServerTerminalPage() {
             void sendInput();
           }, 25);
       });
-      const observer = new ResizeObserver(() => fit.fit());
-      observer.observe(terminalRef.current);
       dispose = () => {
         subscription.dispose();
         resize.dispose();

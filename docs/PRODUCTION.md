@@ -1,6 +1,6 @@
-# Deploy Deplo with Vercel and Neon
+# Deploy Deplo with Vercel, Neon, and Redis
 
-This guide is for the person hosting the Deplo control plane. Vercel runs the dashboard and API; Neon stores its PostgreSQL data. Applications still run on developers' own Linux servers. Give those developers the [user guide](USER_GUIDE.md).
+This guide is for the person hosting the Deplo control plane. Vercel runs the dashboard and API; Neon stores its PostgreSQL data; Redis carries live terminal frames between Vercel instances. Applications still run on developers' own Linux servers. Give those developers the [user guide](USER_GUIDE.md).
 
 ## 1. Create a Neon database
 
@@ -35,10 +35,13 @@ Add these environment variables to the Vercel **Production** environment:
 | `ENCRYPTION_KEY` | New base64 key from `openssl rand -base64 32` |
 | `REGISTRATION_CODE` | New invite code from `openssl rand -hex 24` |
 | `PUBLIC_URL` | The exact HTTPS origin users will open, such as `https://deplo.example.com` |
+| `REDIS_URL` | TLS Redis URL for live terminals, preferably in Mumbai (`bom1`) near the terminal WebSocket function |
 
 `PUBLIC_URL` must have no trailing slash or path. If you use the Vercel-assigned `*.vercel.app` address, deploy once to see its exact URL, then set `PUBLIC_URL` and redeploy. Registration and other write actions require this variable. For a custom domain, connect it in Vercel, update DNS, and set `PUBLIC_URL` to that domain before using Deplo.
 
 Keep `ENCRYPTION_KEY` stable across redeployments. Losing it makes stored deployment secrets unreadable. Share `REGISTRATION_CODE` only with developers you trust; there is no email verification or password reset yet. Configure Preview deployments with a separate Neon branch and a matching `PUBLIC_URL` if you intend to use them; do not point previews at the production database.
+
+For `REDIS_URL`, create an Upstash for Redis database through the Vercel Storage marketplace or use another Redis provider. Choose the Mumbai region when the managed servers and users are near Pakistan. Redis uses TLS and carries encrypted, short-lived terminal messages. Without `REDIS_URL`, Deplo uses the older HTTP terminal transport. After setting it, redeploy the app and update each agent using the setup command on its server. Vercel Hobby WebSockets reconnect automatically when a Function reaches its connection duration limit.
 
 ## 4. Verify and invite users
 

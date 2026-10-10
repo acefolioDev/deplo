@@ -2,7 +2,9 @@
   "name": "@deplo/web",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": "22.x" },
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "prebuild": "prisma generate --schema prisma/schema.prisma",
     "dev": "next dev --hostname 0.0.0.0",
@@ -14,13 +16,16 @@
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@vercel/functions": "^3.9.11",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "ioredis": "^6.0.0",
     "lucide-react": "1.54.0",
     "next": "16.4.0",
     "pg": "8.23.1",
     "react": "19.3.0",
-    "react-dom": "19.3.0"
+    "react-dom": "19.3.0",
+    "ws": "^8.22.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.2.1",
@@ -28,6 +33,7 @@
     "@types/pg": "8.15.5",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "^8.18.2",
     "prisma": "^6.19.3",
     "tailwindcss": "4.2.1",
     "typescript": "5.9.3"

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import {
+  relayPublish,
+  serverChannel,
+  terminalRelayAvailable,
+} from "@/lib/terminal-relay";
 import { pool, prisma, transaction } from "@/lib/db";
 import {
   agentIdentity,
@@ -376,9 +381,10 @@ async function handle(request: NextRequest, path: string[], method: string) {
         if (!sessions.rowCount) return { session: null, closedSessionId };
         const session = sessions.rows[0];
         if (session.status === "pending")
-          await c.query("UPDATE terminal_sessions SET status='active' WHERE id=$1", [
-            session.id,
-          ]);
+          await c.query(
+            "UPDATE terminal_sessions SET status='active' WHERE id=$1",
+            [session.id],
+          );
         const inputs = await c.query(
           "DELETE FROM terminal_inputs WHERE id IN (SELECT id FROM terminal_inputs WHERE session_id=$1 ORDER BY id LIMIT 32 FOR UPDATE SKIP LOCKED) RETURNING id,data",
           [session.id],
@@ -737,7 +743,15 @@ async function handle(request: NextRequest, path: string[], method: string) {
           });
           await audit(user.id, server.id, "root_terminal.open", session.id);
           return json(
-            { sessionId: session.id, expiresAt: session.expires_at },
+            {
+              sessionId: session.id,
+              expiresAt: session.expires_at,
+              transport:
+                terminalRelayAvailable() &&
+                /^0\.1\.[2-9]\d*$/.test(server.agent_version ?? "")
+                  ? "websocket"
+                  : "http",
+            },
             201,
           );
         }
@@ -856,6 +870,11 @@ async function handle(request: NextRequest, path: string[], method: string) {
             });
             if (closed)
               await audit(user.id, server.id, "root_terminal.close", sessionId);
+            if (closed && terminalRelayAvailable())
+              await relayPublish(serverChannel(server.id), {
+                type: "close",
+                sessionId,
+              }).catch(() => {});
             return json({ ok: true });
           }
         }
