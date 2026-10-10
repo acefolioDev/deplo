@@ -24,10 +24,12 @@ if (subscriber) {
     if (!sockets) return;
     try {
       const message = decrypt(sealed);
+      const type = (JSON.parse(message) as { type?: string }).type;
       for (const socket of sockets) {
-        if (socket.readyState === 1 && socket.bufferedAmount < 1_000_000)
+        if (socket.readyState === 1 && socket.bufferedAmount < 1_000_000) {
           socket.send(message);
-        else if (socket.bufferedAmount >= 1_000_000) socket.close(1013);
+          if (type === "closed" || type === "revoke") socket.close(1000);
+        } else if (socket.bufferedAmount >= 1_000_000) socket.close(1013);
       }
     } catch {
       // Reject malformed relay messages without exposing them to a terminal.

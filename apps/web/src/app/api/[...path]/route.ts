@@ -3,6 +3,7 @@ import { cookies } from "next/headers";
 import {
   relayPublish,
   serverChannel,
+  sessionChannel,
   terminalRelayAvailable,
 } from "@/lib/terminal-relay";
 import { pool, prisma, transaction } from "@/lib/db";
@@ -328,13 +329,22 @@ async function handle(request: NextRequest, path: string[], method: string) {
           data: { status: "closed", closed_at: new Date() },
           select: { id: true, user_id: true },
         });
-        for (const x of closed)
+        for (const x of closed) {
           await audit(
             x.user_id,
             agent.server_id,
             "root_terminal.disabled",
             x.id,
           );
+          if (terminalRelayAvailable())
+            await Promise.allSettled([
+              relayPublish(serverChannel(agent.server_id), {
+                type: "close",
+                sessionId: x.id,
+              }),
+              relayPublish(sessionChannel(x.id), { type: "closed" }),
+            ]);
+        }
       }
       return json({ ok: true });
     }
@@ -871,10 +881,13 @@ async function handle(request: NextRequest, path: string[], method: string) {
             if (closed)
               await audit(user.id, server.id, "root_terminal.close", sessionId);
             if (closed && terminalRelayAvailable())
-              await relayPublish(serverChannel(server.id), {
-                type: "close",
-                sessionId,
-              }).catch(() => {});
+              await Promise.allSettled([
+                relayPublish(serverChannel(server.id), {
+                  type: "close",
+                  sessionId,
+                }),
+                relayPublish(sessionChannel(sessionId), { type: "closed" }),
+              ]);
             return json({ ok: true });
           }
         }
@@ -908,8 +921,17 @@ async function handle(request: NextRequest, path: string[], method: string) {
             select: { id: true },
           });
         });
-        for (const x of closed)
+        for (const x of closed) {
           await audit(user.id, server.id, "root_terminal.revoked", x.id);
+          if (terminalRelayAvailable())
+            await relayPublish(sessionChannel(x.id), { type: "closed" }).catch(
+              () => {},
+            );
+        }
+        if (terminalRelayAvailable())
+          await relayPublish(serverChannel(server.id), {
+            type: "revoke",
+          }).catch(() => {});
         await audit(user.id, server.id, "server.revoke", server.id);
         return json({ ok: true });
       }

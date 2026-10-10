@@ -24,12 +24,17 @@ type terminalFrame struct {
 }
 
 var errTerminalRelayUnavailable = errors.New("terminal websocket relay unavailable")
+var errTerminalCredentialRevoked = errors.New("terminal credential revoked")
 
 func (a *api) runTerminalTransport(ctx context.Context, logger *slog.Logger) {
 	var current *terminalProcess
 	defer func() { current.close() }()
 	for ctx.Err() == nil {
 		err := a.runTerminalSocket(ctx, &current)
+		if errors.Is(err, errTerminalCredentialRevoked) {
+			logger.Warn("terminal websocket credential revoked")
+			return
+		}
 		if errors.Is(err, errTerminalRelayUnavailable) {
 			logger.Info("terminal websocket relay not configured; using HTTP transport")
 			current.close()
@@ -64,6 +69,9 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	conn, response, err := dialer.DialContext(ctx, endpoint.String(), requestHeaders)
 	if err != nil {
+		if response != nil && response.StatusCode == 401 {
+			return errTerminalCredentialRevoked
+		}
 		if response != nil && (response.StatusCode == 503 || response.StatusCode == 404) {
 			return errTerminalRelayUnavailable
 		}
