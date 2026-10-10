@@ -17,8 +17,7 @@ type ServerInfo = {
   terminal_available: boolean;
 };
 
-function encode(value: string) {
-  const bytes = new TextEncoder().encode(value);
+function encode(bytes: Uint8Array) {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
@@ -112,18 +111,37 @@ export default function ServerTerminalPage() {
       });
       fit.fit();
       terminal.focus();
-      let inputQueue = Promise.resolve();
-      const subscription = terminal.onData((data) => {
-        inputQueue = inputQueue
-          .then(async () => {
-            if (!cancelled)
+      let pendingInput = "";
+      let sendingInput = false;
+      let inputTimer: ReturnType<typeof setTimeout> | undefined;
+      async function sendInput() {
+        if (sendingInput || cancelled) return;
+        sendingInput = true;
+        try {
+          while (pendingInput && !cancelled) {
+            const bytes = new TextEncoder().encode(pendingInput);
+            pendingInput = "";
+            for (let offset = 0; offset < bytes.length; offset += 4096) {
               await post(`servers/${serverId}/terminal/${sessionId}/input`, {
-                data: encode(data),
+                data: encode(bytes.subarray(offset, offset + 4096)),
               });
-          })
-          .catch((cause) => {
-            if (!cancelled) setError((cause as Error).message);
-          });
+            }
+          }
+        } catch (cause) {
+          pendingInput = "";
+          if (!cancelled) setError((cause as Error).message);
+        } finally {
+          sendingInput = false;
+          if (pendingInput && !cancelled) void sendInput();
+        }
+      }
+      const subscription = terminal.onData((data) => {
+        pendingInput += data;
+        if (!inputTimer)
+          inputTimer = setTimeout(() => {
+            inputTimer = undefined;
+            void sendInput();
+          }, 25);
       });
       const observer = new ResizeObserver(() => fit.fit());
       observer.observe(terminalRef.current);
@@ -131,6 +149,7 @@ export default function ServerTerminalPage() {
         subscription.dispose();
         resize.dispose();
         observer.disconnect();
+        clearTimeout(inputTimer);
         terminal.dispose();
       };
       async function poll() {
@@ -157,7 +176,7 @@ export default function ServerTerminalPage() {
         } catch (cause) {
           if (!cancelled) setError((cause as Error).message);
         }
-        if (!cancelled) timer = setTimeout(() => void poll(), 500);
+        if (!cancelled) timer = setTimeout(() => void poll(), 200);
       }
       await poll();
     })();
@@ -173,7 +192,7 @@ export default function ServerTerminalPage() {
       <SectionHead
         eyebrow="Infrastructure"
         title="Root terminal"
-        description={`Run commands as root on ${server?.name ?? "this server"}${server?.ip ? ` (${server.ip})` : ""}. This session expires after 10 minutes.`}
+        description={`Run commands as root on ${server?.name ?? "this server"}${server?.ip ? ` (${server.ip})` : ""}. The shell starts in /root on that machine and expires after 10 minutes.`}
       />
       {error && (
         <p
@@ -196,7 +215,10 @@ export default function ServerTerminalPage() {
           <h2 className="font-semibold">Open a root shell</h2>
           <p className="mt-2 text-sm text-slate-400">
             Enter your Deplo password to start a new session. Commands run as
-            root on the selected server.
+            root on the selected server. Run{" "}
+            <code className="text-slate-200">pwd</code> to check your location,
+            or <code className="text-slate-200">cd /home/your-username</code> to
+            work in your normal Linux home folder.
           </p>
           <form onSubmit={open} className="mt-5 space-y-4">
             <Input

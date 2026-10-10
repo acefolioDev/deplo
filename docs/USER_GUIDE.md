@@ -22,6 +22,8 @@ Your Deplo URL must use a trusted HTTPS certificate that the VPS accepts. A loca
 
 Open **Servers → Root terminal**, enter your Deplo password, and run commands on the connected VPS. The shell runs as root. You can use it for your own server setup without installing Docker.
 
+The root terminal starts in `/root` on the actual server. A normal Linux account usually starts in `/home/<username>`, so files created with relative paths in the two terminals appear in different folders. Run `pwd` to check your location. Use `cd /home/<username>` in Deplo to work in your normal home folder. Files created there as root are owned by root; run `chown <username>:<username> <path>` if your normal account needs to edit them.
+
 When you decide to deploy a container image, install and start Docker from that terminal:
 
 ```sh
