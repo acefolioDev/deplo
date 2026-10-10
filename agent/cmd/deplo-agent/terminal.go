@@ -45,7 +45,7 @@ func startTerminal(session terminalSession) (*terminalProcess, error) {
 	if user == "root" {
 		cmd = exec.Command("/bin/bash", "-l")
 	} else {
-		cmd = exec.Command("/usr/bin/sudo", "-n", "-u", user, "-H", "/bin/bash", "-l")
+		cmd = exec.Command("/usr/bin/sudo", "-n", "-iu", user, "/bin/bash", "-l")
 	}
 	cmd.Dir = "/"
 	cmd.Env = []string{"HOME=/root", "USER=" + user, "LOGNAME=" + user, "SHELL=/bin/bash", "TERM=xterm-256color", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}

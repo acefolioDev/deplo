@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { api, post } from "@/components/api";
 import { Button, Card, Input, SectionHead } from "@/components/ui";
@@ -21,6 +21,7 @@ type ServerInfo = {
   connected: boolean;
   terminal_available: boolean;
 };
+type Tab = { id: string; shellUser: string };
 
 function encode(bytes: Uint8Array) {
   let binary = "";
@@ -32,27 +33,25 @@ function decode(value: string) {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0));
 }
 
-export default function ServerTerminalPage() {
-  const params = useParams<{ id: string }>();
-  const serverId = params.id;
+function TerminalTab({
+  serverId,
+  tab,
+  active,
+  onShellUserChange,
+  onRemove,
+}: {
+  serverId: string;
+  tab: Tab;
+  active: boolean;
+  onShellUserChange: (value: string) => void;
+  onRemove: () => void;
+}) {
   const [password, setPassword] = useState("");
-  const [shellUser, setShellUser] = useState("root");
   const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [server, setServer] = useState<ServerInfo | null>(null);
-  const [loadingServer, setLoadingServer] = useState(true);
   const terminalRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    void api<{ servers: ServerInfo[] }>("servers")
-      .then((result) =>
-        setServer(result.servers.find((item) => item.id === serverId) ?? null),
-      )
-      .catch((cause) => setError((cause as Error).message))
-      .finally(() => setLoadingServer(false));
-  }, [serverId]);
 
   async function open(event: React.FormEvent) {
     event.preventDefault();
@@ -61,7 +60,7 @@ export default function ServerTerminalPage() {
     try {
       const started = await post<Session>(`servers/${serverId}/terminal`, {
         password,
-        shellUser,
+        shellUser: tab.shellUser,
       });
       setPassword("");
       setSession(started);
@@ -72,7 +71,7 @@ export default function ServerTerminalPage() {
       setBusy(false);
     }
   }
-  async function close() {
+  const close = useCallback(async () => {
     if (!session) return;
     try {
       await post(`servers/${serverId}/terminal/${session.sessionId}/close`, {});
@@ -81,7 +80,11 @@ export default function ServerTerminalPage() {
     }
     setSession(null);
     setStatus("Session closed");
-  }
+  }, [serverId, session]);
+  const removeTab = () => {
+    if (session) void close().finally(onRemove);
+    else onRemove();
+  };
 
   useEffect(() => {
     if (!session || !terminalRef.current) return;
@@ -100,12 +103,13 @@ export default function ServerTerminalPage() {
       const terminal = new Terminal({
         cursorBlink: true,
         fontSize: 13,
+        fontFamily: '"SF Mono", Menlo, Monaco, "Cascadia Code", monospace',
         theme: {
           background: "#070d18",
           foreground: "#e2e8f0",
           cursor: "#34d399",
         },
-        scrollback: 1000,
+        scrollback: 3000,
       });
       const fit = new FitAddon();
       terminal.loadAddon(fit);
@@ -137,7 +141,7 @@ export default function ServerTerminalPage() {
         let queued = "";
         let connected = false;
         const statusText = (rtt?: number) =>
-          `${direct ? "Direct LAN shell" : "Root shell"} active${rtt === undefined ? "" : ` · ${rtt} ms round trip`} · expires ${new Date(session.expiresAt).toLocaleTimeString()}`;
+          `${direct ? "Direct LAN shell" : `${tab.shellUser} shell`} active${rtt === undefined ? "" : ` · ${rtt} ms round trip`} · expires ${new Date(session.expiresAt).toLocaleTimeString()}`;
         const ping = () => {
           if (direct && channel?.readyState === "open")
             channel.send(`ping:${Date.now()}`);
@@ -272,13 +276,13 @@ export default function ServerTerminalPage() {
               ping();
               if (!pingTimer) pingTimer = setInterval(ping, 30_000);
               void connectDirect().catch(closeDirect);
-            } else if (event.type === "rtc-answer" && event.sdp && peer) {
+            } else if (event.type === "rtc-answer" && event.sdp && peer)
               void peer
                 .setRemoteDescription({ type: "answer", sdp: event.sdp })
                 .catch(closeDirect);
-            } else if (event.type === "output" && event.data) {
+            else if (event.type === "output" && event.data)
               terminal.write(decode(event.data));
-            } else if (event.type === "pong" && event.nonce) {
+            else if (event.type === "pong" && event.nonce) {
               const rtt = Date.now() - event.nonce;
               if (!direct) setStatus(statusText(rtt));
             } else if (event.type === "closed") {
@@ -326,11 +330,10 @@ export default function ServerTerminalPage() {
           while (pendingInput && !cancelled) {
             const bytes = new TextEncoder().encode(pendingInput);
             pendingInput = "";
-            for (let offset = 0; offset < bytes.length; offset += 4096) {
+            for (let offset = 0; offset < bytes.length; offset += 4096)
               await post(`servers/${serverId}/terminal/${sessionId}/input`, {
                 data: encode(bytes.subarray(offset, offset + 4096)),
               });
-            }
           }
         } catch (cause) {
           pendingInput = "";
@@ -374,7 +377,7 @@ export default function ServerTerminalPage() {
           }
           setStatus(
             snapshot.status === "active"
-              ? `Root shell active · expires ${new Date(snapshot.expiresAt).toLocaleTimeString()}`
+              ? `${tab.shellUser} shell active · expires ${new Date(snapshot.expiresAt).toLocaleTimeString()}`
               : "Connecting to server…",
           );
         } catch (cause) {
@@ -390,14 +393,131 @@ export default function ServerTerminalPage() {
       clearTimeout(timer);
       dispose?.();
     };
-  }, [serverId, session]);
+  }, [serverId, session, tab.shellUser]);
+
+  return (
+    <div className={active ? "" : "hidden"}>
+      {error && (
+        <p
+          role="alert"
+          className="mb-3 rounded-lg border border-red-900/40 bg-red-950/30 p-3 text-sm text-red-300"
+        >
+          {error}
+        </p>
+      )}
+      {!session ? (
+        <Card className="max-w-lg p-6">
+          <h2 className="font-semibold">Open a shell</h2>
+          <p className="mt-2 text-sm text-slate-400">
+            Enter your Deplo password, then choose{" "}
+            <code className="text-slate-200">root</code> for administration or{" "}
+            <code className="text-slate-200">byte</code> for files owned by your
+            normal Mint account.
+          </p>
+          <form onSubmit={open} className="mt-5 space-y-4">
+            <Input
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Deplo password"
+            />
+            <label className="block text-sm text-slate-300">
+              Run as Linux user
+              <Input
+                className="mt-2"
+                value={tab.shellUser}
+                onChange={(event) => onShellUserChange(event.target.value)}
+                placeholder="root or your Linux username"
+                pattern="[a-z_][a-z0-9_-]{0,31}"
+                required
+              />
+              <span className="mt-1 block text-xs text-slate-500">
+                Enter only the username, such as <code>byte</code>, without{" "}
+                <code>@Byte</code>.
+              </span>
+            </label>
+            <div className="flex gap-2">
+              <Button type="submit" disabled={busy}>
+                {busy ? "Opening…" : `Open ${tab.shellUser || "shell"}`}
+              </Button>
+              <Button type="button" variant="secondary" onClick={removeTab}>
+                Close tab
+              </Button>
+            </div>
+          </form>
+          {status && <p className="mt-4 text-xs text-slate-400">{status}</p>}
+        </Card>
+      ) : (
+        <Card className="p-3">
+          <div className="mb-3 flex items-center justify-between gap-3 px-2 text-xs text-slate-400">
+            <span role="status">{status}</span>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => void close()}>
+                Close session
+              </Button>
+              <Button variant="secondary" onClick={removeTab}>
+                Close tab
+              </Button>
+            </div>
+          </div>
+          <div
+            ref={terminalRef}
+            className="h-[min(70vh,720px)] min-h-80 overflow-hidden rounded-lg bg-[#070d18] p-2"
+          />
+        </Card>
+      )}
+    </div>
+  );
+}
+
+export default function ServerTerminalPage() {
+  const params = useParams<{ id: string }>();
+  const serverId = params.id;
+  const [server, setServer] = useState<ServerInfo | null>(null);
+  const [loadingServer, setLoadingServer] = useState(true);
+  const [error, setError] = useState("");
+  const [tabs, setTabs] = useState<Tab[]>([
+    { id: crypto.randomUUID(), shellUser: "root" },
+  ]);
+  const [activeId, setActiveId] = useState("");
+  useEffect(() => {
+    setActiveId((value) => value || tabs[0]?.id || "");
+  }, [tabs]);
+  useEffect(() => {
+    void api<{ servers: ServerInfo[] }>("servers")
+      .then((result) =>
+        setServer(result.servers.find((item) => item.id === serverId) ?? null),
+      )
+      .catch((cause) => setError((cause as Error).message))
+      .finally(() => setLoadingServer(false));
+  }, [serverId]);
+  const addTab = () => {
+    if (tabs.length >= 8) return;
+    const tab = { id: crypto.randomUUID(), shellUser: "root" };
+    setTabs((items) => [...items, tab]);
+    setActiveId(tab.id);
+  };
+  const removeTab = (id: string) => {
+    setTabs((items) => {
+      const next = items.filter((tab) => tab.id !== id);
+      if (activeId === id && next[0]) setActiveId(next[0].id);
+      return next;
+    });
+  };
+  const updateShellUser = (id: string, shellUser: string) =>
+    setTabs((items) =>
+      items.map((tab) => (tab.id === id ? { ...tab, shellUser } : tab)),
+    );
+  const activeTab = tabs.find((tab) => tab.id === activeId);
 
   return (
     <>
       <SectionHead
         eyebrow="Infrastructure"
-        title="Root terminal"
-        description={`Run commands as root on ${server?.name ?? "this server"}${server?.ip ? ` (${server.ip})` : ""}. The shell starts in /root on that machine and expires after 10 minutes.`}
+        title="Terminal"
+        description={`Open multiple shells on ${server?.name ?? "this server"}${server?.ip ? ` (${server.ip})` : ""}. Each tab keeps its own session for up to 10 minutes.`}
       />
       {error && (
         <p
@@ -415,58 +535,49 @@ export default function ServerTerminalPage() {
             during agent setup. Return to Servers to check its status.
           </p>
         </Card>
-      ) : !session ? (
-        <Card className="max-w-lg p-6">
-          <h2 className="font-semibold">Open a root shell</h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Enter your Deplo password to start a new session. Commands run as
-            root on the selected server. Run{" "}
-            <code className="text-slate-200">pwd</code> to check your location,
-            or <code className="text-slate-200">cd /home/your-username</code> to
-            work in your normal Linux home folder.
-          </p>
-          <form onSubmit={open} className="mt-5 space-y-4">
-            <Input
-              type="password"
-              autoComplete="current-password"
-              required
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              placeholder="Deplo password"
-            />
-            <label className="block text-sm text-slate-300">
-              Run as Linux user
-              <Input
-                className="mt-2"
-                value={shellUser}
-                onChange={(event) => setShellUser(event.target.value)}
-                placeholder="root or your Linux username"
-                pattern="[a-z_][a-z0-9_-]{0,31}"
-                required
-              />
-              <span className="mt-1 block text-xs text-slate-500">
-                Use <code>root</code> for administration or your normal Mint
-                username for user-owned files.
-              </span>
-            </label>
-            <Button type="submit" disabled={busy}>
-              {busy ? "Opening…" : "Open root terminal"}
-            </Button>
-          </form>
-          {status && <p className="mt-4 text-xs text-slate-400">{status}</p>}
-        </Card>
       ) : (
-        <Card className="p-3">
-          <div className="mb-3 flex items-center justify-between gap-3 px-2 text-xs text-slate-400">
-            <span role="status">{status}</span>
-            <Button variant="secondary" onClick={() => void close()}>
-              Close session
-            </Button>
-          </div>
+        <Card className="overflow-hidden p-0">
           <div
-            ref={terminalRef}
-            className="h-[min(70vh,720px)] min-h-80 overflow-hidden rounded-lg bg-[#070d18] p-2"
-          />
+            className="flex min-h-12 items-stretch border-b border-white/10 bg-[#10151d] px-2 pt-2"
+            role="tablist"
+            aria-label="Terminal tabs"
+          >
+            {tabs.map((tab, index) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={tab.id === activeId}
+                onClick={() => setActiveId(tab.id)}
+                className={`max-w-56 truncate rounded-t-lg border border-b-0 px-4 py-2 text-sm ${tab.id === activeId ? "border-white/10 bg-[#070d18] text-slate-100" : "border-transparent text-slate-400 hover:bg-white/5"}`}
+              >
+                {tab.shellUser || `Terminal ${index + 1}`}
+                <span className="ml-2 text-slate-600">{index + 1}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={addTab}
+              disabled={tabs.length >= 8}
+              aria-label="New terminal"
+              title="New terminal"
+              className="mb-1 ml-2 flex h-8 w-8 items-center justify-center rounded-md text-xl text-slate-300 hover:bg-white/10 disabled:opacity-40"
+            >
+              +
+            </button>
+          </div>
+          <div className="p-4">
+            {tabs.map((tab) => (
+              <TerminalTab
+                key={tab.id}
+                serverId={serverId}
+                tab={tab}
+                active={tab.id === activeId}
+                onShellUserChange={(value) => updateShellUser(tab.id, value)}
+                onRemove={() => removeTab(tab.id)}
+              />
+            ))}
+          </div>
         </Card>
       )}
     </>

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/creack/pty"
@@ -29,18 +30,17 @@ var errTerminalRelayUnavailable = errors.New("terminal websocket relay unavailab
 var errTerminalCredentialRevoked = errors.New("terminal credential revoked")
 
 func (a *api) runTerminalTransport(ctx context.Context, logger *slog.Logger) {
-	var current *terminalProcess
-	defer func() { current.close() }()
+	state := &terminalState{processes: make(map[string]*terminalProcess), rtcs: make(map[string]*terminalRTC)}
+	defer state.closeAll()
 	for ctx.Err() == nil {
-		err := a.runTerminalSocket(ctx, &current)
+		err := a.runTerminalSocket(ctx, state)
 		if errors.Is(err, errTerminalCredentialRevoked) {
 			logger.Warn("terminal websocket credential revoked")
 			return
 		}
 		if errors.Is(err, errTerminalRelayUnavailable) {
 			logger.Info("terminal websocket relay not configured; using HTTP transport")
-			current.close()
-			current = nil
+			state.closeAll()
 			a.runTerminal(ctx, logger)
 			return
 		}
@@ -54,7 +54,45 @@ func (a *api) runTerminalTransport(ctx context.Context, logger *slog.Logger) {
 	}
 }
 
-func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) error {
+type terminalState struct {
+	mu        sync.Mutex
+	processes map[string]*terminalProcess
+	rtcs      map[string]*terminalRTC
+}
+
+func (s *terminalState) closeAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, rtc := range s.rtcs {
+		rtc.close()
+		delete(s.rtcs, id)
+	}
+	for id, process := range s.processes {
+		process.close()
+		delete(s.processes, id)
+	}
+}
+
+func (s *terminalState) get(id string) (*terminalProcess, *terminalRTC) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.processes[id], s.rtcs[id]
+}
+
+func (s *terminalState) remove(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rtc := s.rtcs[id]; rtc != nil {
+		rtc.close()
+		delete(s.rtcs, id)
+	}
+	if process := s.processes[id]; process != nil {
+		process.close()
+		delete(s.processes, id)
+	}
+}
+
+func (a *api) runTerminalSocket(ctx context.Context, state *terminalState) error {
 	endpoint, err := url.Parse(a.cfg.URL)
 	if err != nil {
 		return err
@@ -81,13 +119,71 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 	}
 	defer conn.Close()
 	conn.SetReadLimit(65536)
-	var rtc *terminalRTC
-	defer func() { rtc.close() }()
+	defer func() {
+		state.mu.Lock()
+		for id, rtc := range state.rtcs {
+			rtc.close()
+			delete(state.rtcs, id)
+		}
+		state.mu.Unlock()
+	}()
 	frames := make(chan terminalFrame, 128)
 	incoming := make(chan terminalFrame, 32)
 	errorsFromSocket := make(chan error, 2)
 	stop := make(chan struct{})
-	defer close(stop)
+	var pumps sync.WaitGroup
+	pumpStops := make(map[string]chan struct{})
+	stopPump := func(id string) {
+		if done := pumpStops[id]; done != nil {
+			close(done)
+			delete(pumpStops, id)
+		}
+	}
+	startPump := func(process *terminalProcess) {
+		if pumpStops[process.id] != nil {
+			return
+		}
+		pumpStop := make(chan struct{})
+		pumpStops[process.id] = pumpStop
+		pumps.Add(1)
+		go func() {
+			defer pumps.Done()
+			for {
+				select {
+				case <-pumpStop:
+					return
+				case chunk := <-process.output:
+					if len(chunk) == 0 {
+						continue
+					}
+					for len(chunk) < 6144 {
+						select {
+						case more := <-process.output:
+							chunk = append(chunk, more...)
+						default:
+							goto sendChunk
+						}
+					}
+				sendChunk:
+					_, rtc := state.get(process.id)
+					if rtc == nil || !rtc.send(chunk) {
+						select {
+						case frames <- terminalFrame{Type: "output", SessionID: process.id, Data: base64.StdEncoding.EncodeToString(chunk)}:
+						case <-stop:
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+	defer func() {
+		close(stop)
+		for id := range pumpStops {
+			stopPump(id)
+		}
+		pumps.Wait()
+	}()
 	go func() {
 		for {
 			select {
@@ -121,22 +217,43 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 			}
 		}
 	}()
+	maintenance := time.NewTicker(time.Second)
+	defer maintenance.Stop()
 	for {
-		if *current != nil && !time.Now().Before((*current).expiresAt) {
-			rtc.close()
-			rtc = nil
-			(*current).close()
-			*current = nil
-		}
-		var output <-chan []byte
-		if *current != nil && len(frames) < cap(frames)-4 {
-			output = (*current).output
-		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case err := <-errorsFromSocket:
 			return err
+		case <-maintenance.C:
+			state.mu.Lock()
+			for id, process := range state.processes {
+				expired := !time.Now().Before(process.expiresAt)
+				finished := false
+				select {
+				case <-process.done:
+					select {
+					case <-process.readerDone:
+						finished = len(process.output) == 0
+					default:
+					}
+				default:
+				}
+				if expired || finished {
+					if rtc := state.rtcs[id]; rtc != nil {
+						rtc.close()
+						delete(state.rtcs, id)
+					}
+					process.close()
+					delete(state.processes, id)
+					stopPump(id)
+					select {
+					case frames <- terminalFrame{Type: "closed", SessionID: id}:
+					default:
+					}
+				}
+			}
+			state.mu.Unlock()
 		case frame := <-incoming:
 			switch frame.Type {
 			case "open":
@@ -144,55 +261,52 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 					frame.Cols < 20 || frame.Cols > 300 || frame.Rows < 5 || frame.Rows > 100 {
 					continue
 				}
-				if *current != nil && (*current).id != frame.SessionID {
-					rtc.close()
-					rtc = nil
-					(*current).close()
-					*current = nil
-				}
-				if *current == nil {
+				process, _ := state.get(frame.SessionID)
+				if process == nil {
 					process, startErr := startTerminal(terminalSession{
 						ID: frame.SessionID, ExpiresAt: frame.ExpiresAt,
-						Cols: frame.Cols, Rows: frame.Rows,
+						Cols: frame.Cols, Rows: frame.Rows, ShellUser: frame.ShellUser,
 					})
 					if startErr != nil {
 						frames <- terminalFrame{Type: "closed", SessionID: frame.SessionID}
 						continue
 					}
-					*current = process
+					state.mu.Lock()
+					state.processes[frame.SessionID] = process
+					state.mu.Unlock()
 				}
+				startPump(process)
 				frames <- terminalFrame{Type: "started", SessionID: frame.SessionID}
 			case "input":
-				if *current == nil || (*current).id != frame.SessionID {
+				process, _ := state.get(frame.SessionID)
+				if process == nil {
 					continue
 				}
 				input, decodeErr := base64.StdEncoding.DecodeString(frame.Data)
 				if decodeErr == nil && len(input) > 0 && len(input) <= 4096 {
-					_, _ = (*current).file.Write(input)
+					_, _ = process.file.Write(input)
 				}
 			case "resize":
-				if *current == nil || (*current).id != frame.SessionID ||
+				process, _ := state.get(frame.SessionID)
+				if process == nil ||
 					frame.Cols < 20 || frame.Cols > 300 || frame.Rows < 5 || frame.Rows > 100 {
 					continue
 				}
-				if err := pty.Setsize((*current).file, &pty.Winsize{Cols: frame.Cols, Rows: frame.Rows}); err == nil {
-					(*current).cols, (*current).rows = frame.Cols, frame.Rows
+				if err := pty.Setsize(process.file, &pty.Winsize{Cols: frame.Cols, Rows: frame.Rows}); err == nil {
+					process.cols, process.rows = frame.Cols, frame.Rows
 				}
 			case "close":
-				if *current != nil && (*current).id == frame.SessionID {
-					rtc.close()
-					rtc = nil
-					(*current).close()
-					*current = nil
-				}
+				stopPump(frame.SessionID)
+				state.remove(frame.SessionID)
 			case "rtc-offer":
-				if *current == nil || (*current).id != frame.SessionID || len(frame.SDP) == 0 || len(frame.SDP) > 32000 {
+				process, oldRTC := state.get(frame.SessionID)
+				if process == nil || len(frame.SDP) == 0 || len(frame.SDP) > 32000 {
 					continue
 				}
-				rtc.close()
-				rtc = nil
+				if oldRTC != nil {
+					oldRTC.close()
+				}
 				sessionID := frame.SessionID
-				process := *current
 				candidate, rtcErr := startTerminalRTC(process, frame.SDP, func(sdp string) {
 					select {
 					case frames <- terminalFrame{Type: "rtc-answer", SessionID: sessionID, SDP: sdp}:
@@ -200,42 +314,13 @@ func (a *api) runTerminalSocket(ctx context.Context, current **terminalProcess) 
 					}
 				})
 				if rtcErr == nil {
-					rtc = candidate
+					state.mu.Lock()
+					state.rtcs[sessionID] = candidate
+					state.mu.Unlock()
 				}
 			case "ping":
-				if *current != nil && (*current).id == frame.SessionID {
+				if process, _ := state.get(frame.SessionID); process != nil {
 					frames <- terminalFrame{Type: "pong", SessionID: frame.SessionID, Nonce: frame.Nonce}
-				}
-			}
-		case chunk := <-output:
-			for len(chunk) < 6144 {
-				select {
-				case more := <-output:
-					chunk = append(chunk, more...)
-				default:
-					goto sendOutput
-				}
-			}
-		sendOutput:
-			if !rtc.send(chunk) {
-				frames <- terminalFrame{Type: "output", SessionID: (*current).id, Data: base64.StdEncoding.EncodeToString(chunk)}
-			}
-		case <-time.After(250 * time.Millisecond):
-			if *current != nil {
-				select {
-				case <-(*current).done:
-					select {
-					case <-(*current).readerDone:
-						if len((*current).output) == 0 {
-							frames <- terminalFrame{Type: "closed", SessionID: (*current).id}
-							rtc.close()
-							rtc = nil
-							(*current).close()
-							*current = nil
-						}
-					default:
-					}
-				default:
 				}
 			}
 		}

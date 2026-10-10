@@ -167,7 +167,6 @@ export async function GET(request: NextRequest) {
         expires_at: { gt: new Date() },
       },
       orderBy: { created_at: "asc" },
-      take: 1,
       select: {
         id: true,
         expires_at: true,
