@@ -14,27 +14,37 @@ const subscriber = redisUrl
   ? new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: null })
   : null;
 const listeners = new Map<string, Set<WebSocket>>();
+const instanceId = crypto.randomUUID();
 
 publisher?.on("error", () => {});
 subscriber?.on("error", () => {});
 
 if (subscriber) {
   subscriber.on("message", (channel, sealed) => {
-    const sockets = listeners.get(channel);
-    if (!sockets) return;
     try {
-      const message = decrypt(sealed);
-      const type = (JSON.parse(message) as { type?: string }).type;
-      for (const socket of sockets) {
-        if (socket.readyState === 1 && socket.bufferedAmount < 1_000_000) {
-          socket.send(message);
-          if (type === "closed" || type === "revoke") socket.close(1000);
-        } else if (socket.bufferedAmount >= 1_000_000) socket.close(1013);
-      }
+      const payload = JSON.parse(decrypt(sealed)) as {
+        origin?: string;
+        message?: string;
+        type?: string;
+      };
+      if (payload.origin === instanceId) return;
+      deliver(channel, payload.message ?? JSON.stringify(payload));
     } catch {
       // Reject malformed relay messages without exposing them to a terminal.
     }
   });
+}
+
+function deliver(channel: string, message: string) {
+  const sockets = listeners.get(channel);
+  if (!sockets) return;
+  const type = (JSON.parse(message) as { type?: string }).type;
+  for (const socket of sockets) {
+    if (socket.readyState === 1 && socket.bufferedAmount < 1_000_000) {
+      socket.send(message);
+      if (type === "closed" || type === "revoke") socket.close(1000);
+    } else if (socket.bufferedAmount >= 1_000_000) socket.close(1013);
+  }
 }
 
 export function terminalRelayAvailable() {
@@ -69,5 +79,10 @@ export async function relayAttach(channel: string, socket: WebSocket) {
 
 export async function relayPublish(channel: string, event: object) {
   if (!publisher) throw new Error("Terminal relay unavailable");
-  await publisher.publish(channel, encrypt(JSON.stringify(event)));
+  const message = JSON.stringify(event);
+  deliver(channel, message);
+  await publisher.publish(
+    channel,
+    encrypt(JSON.stringify({ origin: instanceId, message })),
+  );
 }
