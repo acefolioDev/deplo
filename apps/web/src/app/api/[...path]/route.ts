@@ -334,33 +334,76 @@ async function handle(request: NextRequest, path: string[], method: string) {
       return json({ ok: true });
     }
     if (p[1] === "terminal" && p[2] === "poll" && method === "POST") {
-      await expireTerminals();
+      const b = await body(request);
+      const outputSessionId =
+        b.sessionId === undefined ? null : uuid(b.sessionId);
+      const data =
+        b.data === undefined || b.data === "" ? "" : terminalData(b.data, 8192);
+      const closed = b.closed === true;
+      if ((data || closed) && !outputSessionId)
+        throw new HttpError(400, "Terminal session ID required");
       const result = await transaction(async (c) => {
+        let closedSessionId: string | null = null;
+        if (outputSessionId && (data || closed)) {
+          const active = await c.query(
+            "SELECT id FROM terminal_sessions WHERE id=$1 AND server_id=$2 AND status='active' AND expires_at>now() FOR UPDATE",
+            [outputSessionId, agent.server_id],
+          );
+          if (active.rowCount) {
+            if (data) {
+              await c.query(
+                "INSERT INTO terminal_outputs(session_id,data) VALUES($1,$2)",
+                [outputSessionId, encrypt(data)],
+              );
+              await c.query(
+                "DELETE FROM terminal_outputs WHERE session_id=$1 AND id NOT IN (SELECT id FROM terminal_outputs WHERE session_id=$1 ORDER BY id DESC LIMIT 32)",
+                [outputSessionId],
+              );
+            }
+            if (closed) {
+              await c.query(
+                "UPDATE terminal_sessions SET status='closed',closed_at=now() WHERE id=$1",
+                [outputSessionId],
+              );
+              closedSessionId = outputSessionId;
+            }
+          }
+        }
         const sessions = await c.query(
-          "SELECT id,expires_at,cols,rows FROM terminal_sessions WHERE server_id=$1 AND status IN ('pending','active') ORDER BY created_at LIMIT 1 FOR UPDATE",
+          "SELECT id,status,expires_at,cols,rows FROM terminal_sessions WHERE server_id=$1 AND status IN ('pending','active') AND expires_at>now() ORDER BY created_at LIMIT 1 FOR UPDATE",
           [agent.server_id],
         );
-        if (!sessions.rowCount) return null;
+        if (!sessions.rowCount) return { session: null, closedSessionId };
         const session = sessions.rows[0];
-        await c.query(
-          "UPDATE terminal_sessions SET status='active' WHERE id=$1",
-          [session.id],
-        );
+        if (session.status === "pending")
+          await c.query("UPDATE terminal_sessions SET status='active' WHERE id=$1", [
+            session.id,
+          ]);
         const inputs = await c.query(
           "DELETE FROM terminal_inputs WHERE id IN (SELECT id FROM terminal_inputs WHERE session_id=$1 ORDER BY id LIMIT 32 FOR UPDATE SKIP LOCKED) RETURNING id,data",
           [session.id],
         );
         return {
-          id: session.id,
-          expiresAt: session.expires_at,
-          cols: session.cols,
-          rows: session.rows,
-          inputs: inputs.rows
-            .sort((a, b) => Number(a.id) - Number(b.id))
-            .map((x) => decrypt(x.data)),
+          session: {
+            id: session.id,
+            expiresAt: session.expires_at,
+            cols: session.cols,
+            rows: session.rows,
+            inputs: inputs.rows
+              .sort((a, b) => Number(a.id) - Number(b.id))
+              .map((x) => decrypt(x.data)),
+          },
+          closedSessionId,
         };
       });
-      return json({ session: result });
+      if (result.closedSessionId)
+        await audit(
+          null,
+          agent.server_id,
+          "root_terminal.process_exit",
+          result.closedSessionId,
+        );
+      return json({ session: result.session });
     }
     if (p[1] === "terminal" && p[2] === "output" && method === "POST") {
       const b = await body(request);
@@ -706,19 +749,45 @@ async function handle(request: NextRequest, path: string[], method: string) {
           });
           if (!session) throw new HttpError(404, "Terminal session not found");
           if (p.length === 4 && method === "GET") {
-            const after = Number(
-              new URL(request.url).searchParams.get("after") ?? "0",
-            );
+            const params = new URL(request.url).searchParams;
+            const after = Number(params.get("after") ?? "0");
             if (!Number.isSafeInteger(after) || after < 0)
               throw new HttpError(400, "Invalid output cursor");
-            const output = await prisma.terminal_outputs.findMany({
-              where: { session_id: sessionId, id: { gt: BigInt(after) } },
-              orderBy: { id: "asc" },
-              take: 50,
-              select: { id: true, data: true },
-            });
+            const deadline =
+              params.get("wait") === "1" ? Date.now() + 2000 : Date.now();
+            let output;
+            do {
+              output = await prisma.terminal_outputs.findMany({
+                where: { session_id: sessionId, id: { gt: BigInt(after) } },
+                orderBy: { id: "asc" },
+                take: 50,
+                select: { id: true, data: true },
+              });
+              if (
+                output.length ||
+                session.status === "closed" ||
+                Date.now() >= deadline ||
+                Date.now() >= session.expires_at.getTime()
+              )
+                break;
+              await new Promise((resolve) => setTimeout(resolve, 150));
+            } while (true);
+            let status = session.status;
+            if (
+              status !== "closed" &&
+              Date.now() >= session.expires_at.getTime()
+            ) {
+              await expireTerminals();
+              status = "closed";
+            } else if (params.get("wait") === "1" && !output.length) {
+              const latest = await prisma.terminal_sessions.findUnique({
+                where: { id: sessionId },
+                select: { status: true },
+              });
+              status = latest?.status ?? "closed";
+            }
             return json({
-              status: session.status,
+              status,
               expiresAt: session.expires_at,
               output: output.map((x) => ({
                 id: x.id.toString(),

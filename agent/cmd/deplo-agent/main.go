@@ -23,7 +23,7 @@ import (
 	"deplo/agent/internal/metrics"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 type config struct {
 	URL            string

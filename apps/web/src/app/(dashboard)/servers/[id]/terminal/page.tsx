@@ -154,9 +154,10 @@ export default function ServerTerminalPage() {
       };
       async function poll() {
         if (cancelled) return;
+        let retryDelay = 0;
         try {
           const snapshot = await api<Snapshot>(
-            `servers/${serverId}/terminal/${sessionId}?after=${cursor}`,
+            `servers/${serverId}/terminal/${sessionId}?after=${cursor}&wait=1`,
           );
           if (cancelled) return;
           for (const chunk of snapshot.output) {
@@ -175,8 +176,9 @@ export default function ServerTerminalPage() {
           );
         } catch (cause) {
           if (!cancelled) setError((cause as Error).message);
+          retryDelay = 500;
         }
-        if (!cancelled) timer = setTimeout(() => void poll(), 200);
+        if (!cancelled) timer = setTimeout(() => void poll(), retryDelay);
       }
       await poll();
     })();

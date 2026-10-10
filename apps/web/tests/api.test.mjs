@@ -269,6 +269,30 @@ if (!databaseURL) {
       Buffer.from(r.data.output[0].data, "base64").toString(),
       "deplo\r\n",
     );
+    const waitingForOutput = call(
+      `servers/${serverId}/terminal/${terminalId}?after=${r.data.output[0].id}&wait=1`,
+      "GET",
+      undefined,
+      null,
+      cookie,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    r = await call(
+      "agent/terminal/poll",
+      "POST",
+      {
+        sessionId: terminalId,
+        data: Buffer.from("combined output\r\n").toString("base64"),
+      },
+      agentCredential,
+    );
+    assert.equal(r.data.session.id, terminalId);
+    r = await waitingForOutput;
+    assert.equal(r.status, 200);
+    assert.equal(
+      Buffer.from(r.data.output[0].data, "base64").toString(),
+      "combined output\r\n",
+    );
     r = await call(
       `servers/${serverId}/terminal/${terminalId}/close`,
       "POST",
@@ -317,6 +341,40 @@ if (!databaseURL) {
       cookie,
     );
     assert.equal(r.data.status, "closed");
+    r = await call(
+      `servers/${serverId}/terminal`,
+      "POST",
+      { password: "strong-password-1234" },
+      null,
+      cookie,
+    );
+    assert.equal(r.status, 201);
+    const completedTerminalId = r.data.sessionId;
+    r = await call("agent/terminal/poll", "POST", {}, agentCredential);
+    assert.equal(r.data.session.id, completedTerminalId);
+    r = await call(
+      "agent/terminal/poll",
+      "POST",
+      {
+        sessionId: completedTerminalId,
+        data: Buffer.from("final output\r\n").toString("base64"),
+        closed: true,
+      },
+      agentCredential,
+    );
+    assert.equal(r.data.session, null);
+    r = await call(
+      `servers/${serverId}/terminal/${completedTerminalId}`,
+      "GET",
+      undefined,
+      null,
+      cookie,
+    );
+    assert.equal(r.data.status, "closed");
+    assert.equal(
+      Buffer.from(r.data.output[0].data, "base64").toString(),
+      "final output\r\n",
+    );
     r = await call(
       "projects",
       "POST",

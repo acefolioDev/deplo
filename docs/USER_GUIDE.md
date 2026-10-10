@@ -16,6 +16,8 @@ Copy the command to a terminal on the VPS and run it. The installer verifies the
 
 If pairing says **Invalid or expired pairing token**, click **Pair token** again, use **Copy token** to copy the newly displayed token, and rerun the same setup command on the VPS. The previous failed attempt leaves the agent stopped; you do not need to remove it first.
 
+To update an already paired agent, run the same setup command again. It keeps the existing server identity and does not ask for another pairing token.
+
 Your Deplo URL must use a trusted HTTPS certificate that the VPS accepts. A local HTTP development server cannot connect a remote VPS.
 
 ## 3. Add software when you need it
