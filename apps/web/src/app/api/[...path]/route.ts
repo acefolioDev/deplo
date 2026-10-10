@@ -125,7 +125,7 @@ async function requireDeploymentRuntime(
       "Caddy is not ready on this server. Install and configure it before deploying an environment with domains.",
     );
 }
-async function rateLimit(key: string, maximum: number) {
+async function checkRateLimit(key: string, maximum: number) {
   const hash = sha256(key);
   const count = await prisma.login_attempts.count({
     where: {
@@ -133,8 +133,20 @@ async function rateLimit(key: string, maximum: number) {
       occurred_at: { gt: new Date(Date.now() - 15 * 60 * 1000) },
     },
   });
-  if (count >= maximum) throw new HttpError(429, "Too many attempts");
-  await prisma.login_attempts.create({ data: { key_hash: hash } });
+  if (count >= maximum)
+    throw new HttpError(429, "Too many incorrect attempts. Try again shortly.");
+}
+async function recordRateLimit(key: string) {
+  await prisma.login_attempts.create({ data: { key_hash: sha256(key) } });
+}
+async function clearRateLimit(key: string) {
+  await prisma.login_attempts.deleteMany({
+    where: { key_hash: sha256(key) },
+  });
+}
+async function rateLimit(key: string, maximum: number) {
+  await checkRateLimit(key, maximum);
+  await recordRateLimit(key);
 }
 function terminalData(value: unknown, maxBytes: number) {
   if (
@@ -216,13 +228,20 @@ async function handle(request: NextRequest, path: string[], method: string) {
       const b = await body(request);
       const email = str(b.email, "email", 254).toLowerCase();
       const password = str(b.password, "password", 256);
-      await rateLimit(`login:${email}`, 10);
+      const limitKey = `login:${email}`;
+      await checkRateLimit(limitKey, 10);
       const account = await prisma.users.findUnique({
         where: { email },
         select: { id: true, email: true, password_hash: true },
       });
-      if (!account || !(await verifyPassword(password, account.password_hash)))
+      if (
+        !account ||
+        !(await verifyPassword(password, account.password_hash))
+      ) {
+        await recordRateLimit(limitKey);
         throw new HttpError(401, "Invalid credentials");
+      }
+      await clearRateLimit(limitKey);
       const token = secret();
       await prisma.sessions.create({
         data: {
@@ -735,14 +754,21 @@ async function handle(request: NextRequest, path: string[], method: string) {
               "Root terminal is unavailable on this server",
             );
           const b = await body(request);
-          await rateLimit(`terminal:${user.id}`, 5);
+          const limitKey = `terminal:${user.id}`;
+          await checkRateLimit(limitKey, 5);
           const password = str(b.password, "password", 256);
           const owner = await prisma.users.findUnique({
             where: { id: user.id },
             select: { password_hash: true },
           });
-          if (!owner || !(await verifyPassword(password, owner.password_hash)))
+          if (
+            !owner ||
+            !(await verifyPassword(password, owner.password_hash))
+          ) {
+            await recordRateLimit(limitKey);
             throw new HttpError(401, "Incorrect password");
+          }
+          await clearRateLimit(limitKey);
           const session = await prisma.terminal_sessions.create({
             data: {
               server_id: server.id,
