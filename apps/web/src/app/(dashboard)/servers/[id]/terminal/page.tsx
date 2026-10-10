@@ -10,6 +10,7 @@ type Session = {
   sessionId: string;
   expiresAt: string;
   transport: "http" | "websocket";
+  shellUser: string;
 };
 type Output = { id: string; data: string };
 type Snapshot = { status: string; expiresAt: string; output: Output[] };
@@ -35,6 +36,7 @@ export default function ServerTerminalPage() {
   const params = useParams<{ id: string }>();
   const serverId = params.id;
   const [password, setPassword] = useState("");
+  const [shellUser, setShellUser] = useState("root");
   const [session, setSession] = useState<Session | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
@@ -59,6 +61,7 @@ export default function ServerTerminalPage() {
     try {
       const started = await post<Session>(`servers/${serverId}/terminal`, {
         password,
+        shellUser,
       });
       setPassword("");
       setSession(started);
@@ -431,6 +434,21 @@ export default function ServerTerminalPage() {
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Deplo password"
             />
+            <label className="block text-sm text-slate-300">
+              Run as Linux user
+              <Input
+                className="mt-2"
+                value={shellUser}
+                onChange={(event) => setShellUser(event.target.value)}
+                placeholder="root or your Linux username"
+                pattern="[a-z_][a-z0-9_-]{0,31}"
+                required
+              />
+              <span className="mt-1 block text-xs text-slate-500">
+                Use <code>root</code> for administration or your normal Mint
+                username for user-owned files.
+              </span>
+            </label>
             <Button type="submit" disabled={busy}>
               {busy ? "Opening…" : "Open root terminal"}
             </Button>

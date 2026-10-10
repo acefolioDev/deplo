@@ -22,6 +22,7 @@ type terminalFrame struct {
 	Cols      uint16    `json:"cols,omitempty"`
 	Rows      uint16    `json:"rows,omitempty"`
 	Nonce     int64     `json:"nonce,omitempty"`
+	ShellUser string    `json:"shellUser,omitempty"`
 }
 
 var errTerminalRelayUnavailable = errors.New("terminal websocket relay unavailable")

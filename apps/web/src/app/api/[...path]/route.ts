@@ -404,7 +404,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
           }
         }
         const sessions = await c.query(
-          "SELECT id,status,expires_at,cols,rows FROM terminal_sessions WHERE server_id=$1 AND status IN ('pending','active') AND expires_at>now() ORDER BY created_at LIMIT 1 FOR UPDATE",
+          "SELECT id,status,expires_at,cols,rows,shell_user FROM terminal_sessions WHERE server_id=$1 AND status IN ('pending','active') AND expires_at>now() ORDER BY created_at LIMIT 1 FOR UPDATE",
           [agent.server_id],
         );
         if (!sessions.rowCount) return { session: null, closedSessionId };
@@ -424,6 +424,7 @@ async function handle(request: NextRequest, path: string[], method: string) {
             expiresAt: session.expires_at,
             cols: session.cols,
             rows: session.rows,
+            shellUser: session.shell_user,
             inputs: inputs.rows
               .sort((a, b) => Number(a.id) - Number(b.id))
               .map((x) => decrypt(x.data)),
@@ -754,6 +755,9 @@ async function handle(request: NextRequest, path: string[], method: string) {
               "Root terminal is unavailable on this server",
             );
           const b = await body(request);
+          const shellUser = optional(b.shellUser, "shell user", 32) ?? "root";
+          if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(shellUser))
+            throw new HttpError(400, "Invalid shell user");
           const limitKey = `terminal:${user.id}`;
           await checkRateLimit(limitKey, 5);
           const password = str(b.password, "password", 256);
@@ -774,14 +778,16 @@ async function handle(request: NextRequest, path: string[], method: string) {
               server_id: server.id,
               user_id: user.id,
               expires_at: new Date(Date.now() + 10 * 60 * 1000),
+              shell_user: shellUser,
             },
-            select: { id: true, expires_at: true },
+            select: { id: true, expires_at: true, shell_user: true },
           });
           await audit(user.id, server.id, "root_terminal.open", session.id);
           return json(
             {
               sessionId: session.id,
               expiresAt: session.expires_at,
+              shellUser: session.shell_user,
               transport:
                 terminalRelayAvailable() &&
                 /^0\.1\.[2-9]\d*$/.test(server.agent_version ?? "")

@@ -67,6 +67,7 @@ export async function GET(request: NextRequest) {
         expires_at: true,
         cols: true,
         rows: true,
+        shell_user: true,
       },
     });
     if (!session) return new Response("Session closed", { status: 404 });
@@ -138,6 +139,7 @@ export async function GET(request: NextRequest) {
             expiresAt: session.expires_at,
             cols: session.cols,
             rows: session.rows,
+            shellUser: session.shell_user,
           });
           ws.send(
             JSON.stringify({ type: "ready", expiresAt: session.expires_at }),
@@ -166,7 +168,13 @@ export async function GET(request: NextRequest) {
       },
       orderBy: { created_at: "asc" },
       take: 1,
-      select: { id: true, expires_at: true, cols: true, rows: true },
+      select: {
+        id: true,
+        expires_at: true,
+        cols: true,
+        rows: true,
+        shell_user: true,
+      },
     });
     return experimental_upgradeWebSocket(
       (ws) => {
@@ -274,6 +282,7 @@ export async function GET(request: NextRequest) {
                 expiresAt: session.expires_at,
                 cols: session.cols,
                 rows: session.rows,
+                shellUser: session.shell_user,
               }),
             );
         })().catch(() => ws.close(1011));

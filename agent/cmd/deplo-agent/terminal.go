@@ -20,6 +20,7 @@ type terminalSession struct {
 	Inputs    []string  `json:"inputs"`
 	Cols      uint16    `json:"cols"`
 	Rows      uint16    `json:"rows"`
+	ShellUser string    `json:"shellUser"`
 }
 type terminalProcess struct {
 	id         string
@@ -36,9 +37,18 @@ type terminalProcess struct {
 }
 
 func startTerminal(session terminalSession) (*terminalProcess, error) {
-	cmd := exec.Command("/bin/bash", "-l")
-	cmd.Dir = "/root"
-	cmd.Env = []string{"HOME=/root", "USER=root", "LOGNAME=root", "SHELL=/bin/bash", "TERM=xterm-256color", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	user := session.ShellUser
+	if user == "" {
+		user = "root"
+	}
+	var cmd *exec.Cmd
+	if user == "root" {
+		cmd = exec.Command("/bin/bash", "-l")
+	} else {
+		cmd = exec.Command("/usr/bin/sudo", "-n", "-u", user, "-H", "/bin/bash", "-l")
+	}
+	cmd.Dir = "/"
+	cmd.Env = []string{"HOME=/root", "USER=" + user, "LOGNAME=" + user, "SHELL=/bin/bash", "TERM=xterm-256color", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
 	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: session.Rows, Cols: session.Cols})
 	if err != nil {
 		return nil, err
